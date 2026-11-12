@@ -29,7 +29,12 @@ const AD_SLOT = `<div class="ad" aria-label="বিজ্ঞাপন"><!-- AdSe
 
 const MENU = up => `<header class="sitetop"><a class="brand" href="${up}index.html">এক্স-রে বায়োলজি</a><nav class="menu"><a href="${up}index.html">ক্যামেরা</a><a href="${up}read/index.html">পড়ো</a><a href="${up}about.html">পরিচিতি</a><a href="${up}contact.html">যোগাযোগ</a></nav></header>`;
 const FOOT = up => `<footer class="sitefoot"><p><a href="${up}about.html">আমাদের কথা</a> · <a href="${up}privacy.html">গোপনীয়তা নীতি</a> · <a href="${up}terms.html">শর্তাবলী</a> · <a href="${up}contact.html">যোগাযোগ</a></p><p>© Board &amp; Beyond · <a href="https://bandb.academy/">bandb.academy</a></p></footer>`;
-const page = ({ title, desc, path, body, up = "../" }) => `<!doctype html>
+const ORG = { "@type": "Organization", name: "Board & Beyond", url: "https://bandb.academy/" };
+const crumbs = (path, name) => ({ "@context": "https://schema.org", "@type": "BreadcrumbList", itemListElement: [
+  { "@type": "ListItem", position: 1, name: "এক্স-রে বায়োলজি", item: BASE },
+  ...(path.startsWith("read/") ? [{ "@type": "ListItem", position: 2, name: "মানবদেহের সব অংশ", item: BASE + "read/index.html" }] : []),
+  { "@type": "ListItem", position: path.startsWith("read/") ? 3 : 2, name, item: BASE + path }] });
+const page = ({ title, desc, path, body, up = "../", ld = [] }) => `<!doctype html>
 <html lang="bn">
 <head>
 <meta charset="utf-8">
@@ -37,6 +42,10 @@ const page = ({ title, desc, path, body, up = "../" }) => `<!doctype html>
 <title>${esc(title)} | এক্স-রে বায়োলজি</title>
 <meta name="description" content="${esc(desc)}">
 <link rel="canonical" href="${BASE}${path}">
+<meta property="og:type" content="article"><meta property="og:locale" content="bn_BD"><meta property="og:site_name" content="এক্স-রে বায়োলজি">
+<meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(desc)}"><meta property="og:url" content="${BASE}${path}">
+<meta name="twitter:card" content="summary">
+${ld.map(o => `<script type="application/ld+json">${JSON.stringify(o).replace(/</g, "\\u003c")}</script>`).join("\n")}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Anek+Bangla:wdth,wght@75..125,400..800&family=Hind+Siliguri:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -104,7 +113,8 @@ ${AD_SLOT}
 <ul class="list">${mates.map(o => `<li><a href="${o.id}.html">${esc(o.bn)} <small>${esc(o.en)}</small></a></li>`).join("")}</ul>
 <section class="rows">${promo("read", i)}</section>`;
   writeFileSync(join(root, `site/read/${p.id}.html`),
-    page({ title: `${p.bn} (${p.en})`, desc: `${p.bn} (${p.en}): ${p.about} ${p.points.join("। ")}`, path: `read/${p.id}.html`, body }));
+    page({ title: `${p.bn} (${p.en})`, desc: `${p.bn} (${p.en}): ${p.about} ${p.points.join("। ")}`, path: `read/${p.id}.html`, body,
+      ld: [crumbs(`read/${p.id}.html`, p.bn), { "@context": "https://schema.org", "@type": "Article", headline: `${p.bn} (${p.en})`, inLanguage: "bn", about: p.en, publisher: ORG, isAccessibleForFree: true, mainEntityOfPage: `${BASE}read/${p.id}.html` }] }));
   urls.push(`read/${p.id}.html`);
 });
 
@@ -114,6 +124,7 @@ const groups = Object.entries(content.layers).map(([k, L]) =>
 writeFileSync(join(root, "site/read/index.html"), page({
   title: "মানবদেহের সব অংশ", path: "read/index.html",
   desc: "করোটির অস্থি, মস্তিষ্কের অংশ, মুখের পেশি ও হাতের অস্থির বাংলা ব্যাখ্যা। HSC জীববিজ্ঞান ও মেডিকেল ভর্তি প্রস্তুতির জন্য।",
+  ld: [crumbs("read/index.html", "মানবদেহের সব অংশ")],
   body: `<h1>মানবদেহের সব অংশ</h1>
 <p class="lead">প্রতিটি অংশের নাম, কাজ আর মনে রাখার তথ্য। যেকোনো অংশ ৩ডি মডেলে ঘুরিয়ে দেখতে পারো।</p>
 ${groups}
