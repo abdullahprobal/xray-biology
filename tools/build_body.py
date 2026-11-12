@@ -138,6 +138,7 @@ LIMBS = [  # name, parts, upper landmark, lower landmark (MediaPipe pose numberi
     ("forearm_l", ["left radius", "left ulna"], 13, 15, 1600), ("forearm_r", ["right radius", "right ulna"], 14, 16, 1600),
     ("femur_l", ["left femur"], 23, 25, 1600), ("femur_r", ["right femur"], 24, 26, 1600),
     ("shin_l", ["left tibia", "left fibula"], 25, 27, 1800), ("shin_r", ["right tibia", "right fibula"], 26, 28, 1800),
+    ("foot_l", ["left foot"], 27, 31, 1500), ("foot_r", ["right foot"], 28, 32, 1500),   # ankle -> tip of the toes
 ]
 
 blob = bytearray()
@@ -166,6 +167,10 @@ for name, layer, parts, target, skip in TORSO:
 for name, parts, ja, jb, target in LIMBS:
     V, F = merge(parts)
     up, low = ends(V)
+    if name.startswith("foot"):                                       # a foot runs from the ankle forward to the toes
+        z = V[:, 2]; front = V[:, 1] * fy
+        up = V[z > z.max() - 0.08 * np.ptp(z)].mean(0)
+        low = V[front > front.max() - 0.05 * np.ptp(front)].mean(0)
     a = low - up; L = np.linalg.norm(a); ah = a / L
     side = np.array([sx, 0.0, 0.0]); b = side - (side @ ah) * ah; b /= np.linalg.norm(b)
     c = np.cross(ah, b)
