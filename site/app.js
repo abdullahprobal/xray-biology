@@ -1,0 +1,607 @@
+// X-ray Biology (Board & Beyond). Own code. Uses three.js and MediaPipe Tasks Vision.
+// Model data: BodyParts3D (CC BY-SA 2.1 JP), see MODELS-LICENSE.md.
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+
+const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+const MODELS = "https://storage.googleapis.com/mediapipe-models/";
+const FACE_MODEL = MODELS + "face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+const HAND_MODEL = MODELS + "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const SITE_NAME = "bandb.academy/biology";
+const QUIZ_LEN = 8;
+
+const $ = id => document.getElementById(id);
+const bnNum = n => String(n).replace(/\d/g, d => "০১২৩৪৫৬৭৮৯"[d]);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const getJSON = u => fetch(u).then(r => { if (!r.ok) throw new Error(u + " " + r.status); return r.json(); });
+
+// ---------------------------------------------------------------- state
+const st = {
+  mode: null,                      // "mirror" | "explore"
+  layers: { skull: true, brain: false, muscles: false, eyes: true, hands: true },
+  solid: false, names: true, selected: null, quiz: null,
+};
+let META, CONTENT, PROMOS = [], PARTS = [], ANCHOR = {};
+let renderer, headScene, handScene, cam, ortho, baseProj, headGroup, jawPivot;
+let W = 2, H = 2, DPR = 1;
+const meshes = {};                 // name -> { mesh, layer }
+const hands = [];                  // two rigs: { group, palm, bones[], pts[] }
+const FINGER_BONES = [[1,2],[2,3],[3,4],[5,6],[6,7],[7,8],[9,10],[10,11],[11,12],[13,14],[14,15],[15,16],[17,18],[18,19],[19,20]];
+const HEAD_CENTRE = new THREE.Vector3(0, 3, -5);
+
+// ---------------------------------------------------------------- promotions
+function promoHTML(slot, all) {
+  const list = PROMOS.filter(p => p.slot === slot);
+  if (!list.length) return "";
+  const pick = all ? list : [list[Math.floor(Math.random() * list.length)]];
+  return pick.map(p => {
+    const url = p.url + (p.url.includes("?") ? "&" : "?") + "utm_source=biology&utm_medium=" + slot;
+    return `<a class="promo" href="${esc(url)}" target="_blank" rel="noopener"><b>${esc(p.title)}</b><span>${esc(p.text)}</span><em>${esc(p.label)} →</em></a>`;
+  }).join("");
+}
+getJSON("data/promos.json").then(d => { PROMOS = d.promos || []; $("homePromos").innerHTML = promoHTML("home", true); }).catch(() => {});
+
+// ---------------------------------------------------------------- data + scene
+let readyPromise = null;
+function ready() { return readyPromise || (readyPromise = build()); }
+
+const VERT = `
+varying vec3 vNormal; varying vec3 vView; uniform float uFlatView;
+void main() {
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vNormal = normalMatrix * normal;
+  vView = uFlatView > 0.5 ? vec3(0.0, 0.0, 1.0) : -mv.xyz;
+  gl_Position = projectionMatrix * mv;
+}`;
+// uMode: 0 = see-through glow, 1 = lit solid, 2 = flat fill
+const FRAG = `
+uniform vec3 uGlow; uniform vec3 uSolid; uniform float uMode, uGain, uAlpha;
+varying vec3 vNormal; varying vec3 vView;
+void main() {
+  vec3 n = normalize(vNormal);
+  float facing = abs(dot(n, normalize(vView)));
+  if (uMode > 1.5) { gl_FragColor = vec4(uGlow, uAlpha); return; }
+  if (uMode > 0.5) {
+    if (!gl_FrontFacing) n = -n;
+    float lit = max(dot(n, normalize(vec3(0.3, 0.6, 0.75))), 0.0);
+    gl_FragColor = vec4(uSolid * (0.3 + 0.75 * lit) + vec3(0.18) * pow(1.0 - facing, 3.0), 1.0);
+    return;
+  }
+  float edge = pow(1.0 - facing, 2.0);
+  gl_FragColor = vec4(uGlow, clamp((0.04 + edge) * uGain, 0.0, 1.0) * uAlpha);
+}`;
+
+function material(glow, solid, gain, mode) {
+  return new THREE.ShaderMaterial({
+    vertexShader: VERT, fragmentShader: FRAG, side: THREE.DoubleSide, transparent: true, depthTest: false, depthWrite: false,
+    blending: mode === 2 ? THREE.NormalBlending : THREE.AdditiveBlending,
+    uniforms: { uGlow: { value: new THREE.Color(glow) }, uSolid: { value: new THREE.Color(solid) }, uMode: { value: mode || 0 },
+                uGain: { value: gain }, uAlpha: { value: 1 }, uFlatView: { value: 0 } },
+  });
+}
+
+function unpack(bin) {
+  const out = {};
+  for (const m of META.meshes) {
+    const q = new Uint16Array(bin.slice(m.offV, m.offV + m.nv * 6));
+    const pos = new Float32Array(q.length);
+    for (let i = 0; i < q.length; i++) pos[i] = m.min[i % 3] + (q[i] / 65535) * m.size[i % 3];
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    g.setIndex(new THREE.BufferAttribute(new Uint16Array(bin.slice(m.offI, m.offI + m.ni * 2)), 1));
+    g.computeVertexNormals();
+    out[m.name] = g;
+  }
+  return out;
+}
+
+async function build() {
+  const [meta, content, bin] = await Promise.all([
+    getJSON("assets/anatomy.json"), getJSON("data/parts.json"),
+    fetch("assets/anatomy.bin").then(r => { if (!r.ok) throw new Error("anatomy.bin"); return r.arrayBuffer(); }),
+    document.fonts ? document.fonts.load('600 15px "Anek Bangla"', "অ").catch(() => {}) : null,
+  ]);
+  META = meta; CONTENT = content; PARTS = content.parts;
+  for (const a of META.anchors) ANCHOR[a.t] = a;
+  const geo = unpack(bin);
+
+  renderer = new THREE.WebGLRenderer({ canvas: $("gl"), alpha: true, antialias: true });
+  renderer.setClearColor(0x000000, 0); renderer.autoClear = false;
+  headScene = new THREE.Scene(); handScene = new THREE.Scene();
+  cam = new THREE.PerspectiveCamera(63, 1, 1, 5000);        // MediaPipe's face pose assumes a 63 degree vertical view
+  ortho = new THREE.OrthographicCamera(0, 1, 1, 0, -5000, 5000);
+  headGroup = new THREE.Group(); headGroup.matrixAutoUpdate = false; headGroup.visible = false; headScene.add(headGroup);
+  jawPivot = new THREE.Group(); jawPivot.position.fromArray(META.jawPivot); headGroup.add(jawPivot);
+
+  const add = (name, g, layer, glow, solid, gain, order, mode, parent) => {
+    const mesh = new THREE.Mesh(g, material(glow, solid, gain, mode));
+    mesh.renderOrder = order; mesh.frustumCulled = false; (parent || headGroup).add(mesh);
+    meshes[name] = { mesh, layer, fixed: mode !== undefined };
+    return mesh;
+  };
+  add("veil", geo.skin, "veil", 0x04070d, 0x04070d, 1, -5, 2);
+  add("outline", geo.skin, "outline", 0x8fa3b8, 0x8fa3b8, 0.32, 0, 0);
+  add("muscles", geo.muscles, "muscles", 0xff7a6b, 0xb5483f, 0.5, 1);
+  add("cranium", geo.cranium, "skull", 0xe6eef8, 0xe8e1cf, 1, 2);
+  add("jaw", geo.jaw, "skull", 0xe6eef8, 0xe8e1cf, 1, 2, undefined, jawPivot).position.fromArray(META.jawPivot).multiplyScalar(-1);
+  add("eyes", geo.eyes, "eyes", 0xfff3a8, 0xf3f3ec, 0.9, 3);
+  add("cerebrum", geo.cerebrum, "brain", 0xff9fc0, 0xe0a39d, 0.4, 4);
+  add("hindbrain", geo.hindbrain, "brain", 0xffc37a, 0xd4ab83, 0.6, 4);
+
+  for (let h = 0; h < 2; h++) {
+    const group = new THREE.Group(); group.visible = false; handScene.add(group);
+    const piece = g => { const m = new THREE.Mesh(g, material(0xd9f0ff, 0xe8e1cf, 1)); m.material.uniforms.uFlatView.value = 1;
+                         m.matrixAutoUpdate = false; m.frustumCulled = false; group.add(m); return m; };
+    hands.push({ group, palm: piece(geo.hand_palm), bones: FINGER_BONES.map(([a, b]) => piece(geo["hand_b_" + a + "_" + b])), pts: null });
+  }
+  buildChips(); applyStyle();
+  new ResizeObserver(layout).observe($("stage"));
+}
+
+function allMaterials(fn) {
+  for (const k in meshes) fn(meshes[k].mesh.material, meshes[k]);
+  for (const r of hands) { fn(r.palm.material, {}); r.bones.forEach(b => fn(b.material, {})); }
+}
+function applyStyle() {
+  allMaterials((m, info) => {
+    if (info.fixed) return;
+    m.uniforms.uMode.value = st.solid ? 1 : 0;
+    m.blending = st.solid ? THREE.NormalBlending : THREE.AdditiveBlending;
+    m.transparent = !st.solid; m.depthTest = m.depthWrite = st.solid; m.needsUpdate = true;
+  });
+  $("tStyle").textContent = st.solid ? "সলিড" : "এক্স-রে";
+  $("tNames").classList.toggle("on", st.names);
+}
+
+// ---------------------------------------------------------------- layout
+const video = $("video");
+function layout() {
+  if (!renderer) return;
+  const r = $("stage").getBoundingClientRect();
+  let w = r.width, h = r.height, left = 0, top = 0;
+  if (st.mode === "mirror" && video.videoWidth) {           // cover the stage with the camera picture, keep its shape
+    const k = Math.max(r.width / video.videoWidth, r.height / video.videoHeight);
+    w = video.videoWidth * k; h = video.videoHeight * k; left = (r.width - w) / 2; top = (r.height - h) / 2;
+  }
+  W = Math.max(2, Math.round(w)); H = Math.max(2, Math.round(h));
+  const L = $("layer"); L.style.width = W + "px"; L.style.height = H + "px"; L.style.left = left + "px"; L.style.top = top + "px";
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  renderer.setPixelRatio(DPR); renderer.setSize(W, H, false);
+  cam.aspect = W / H; cam.updateProjectionMatrix(); baseProj = cam.projectionMatrix.clone();
+  ortho.right = W; ortho.top = H; ortho.updateProjectionMatrix();
+  for (const id of ["hud", "shade"]) { const c = $(id); c.width = Math.round(W * DPR); c.height = Math.round(H * DPR); }
+}
+
+// ---------------------------------------------------------------- head pose
+const headM = new THREE.Matrix4(), jawM = new THREE.Matrix4(), tmpM = new THREE.Matrix4(), fix = new THREE.Matrix4();
+const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scl = new THREE.Vector3(1, 1, 1);
+const tP = new THREE.Vector3(), tQ = new THREE.Quaternion(), tS = new THREE.Vector3(), v = new THREE.Vector3(), v2 = new THREE.Vector3();
+const head = { on: false, jaw: 0, s: 1, tx: 0, ty: 0 };
+
+function setJaw(open) {
+  head.jaw += (open - head.jaw) * 0.6;
+  const a = Math.min(1, Math.max(0, head.jaw)) * 0.35;
+  jawPivot.rotation.x = a;
+  const p = META.jawPivot;
+  jawM.makeTranslation(p[0], p[1], p[2]).multiply(tmpM.makeRotationX(a)).multiply(tmpM.makeTranslation(-p[0], -p[1], -p[2]));
+}
+
+function poseFromFace(matrix, lms, jawOpen) {
+  tmpM.fromArray(matrix).decompose(tP, tQ, tS);
+  if (!head.on) { pos.copy(tP); quat.copy(tQ); scl.copy(tS); head.s = 1; head.tx = head.ty = 0; }
+  else { pos.lerp(tP, 0.6); quat.slerp(tQ, 0.55); scl.lerp(tS, 0.5); }
+  head.on = true;
+  headM.compose(pos, quat, scl);
+  // Line the model up with the tracked face points on screen: best scale + shift (least squares).
+  const P = [], Q = []; let pmx = 0, pmy = 0, qmx = 0, qmy = 0;
+  for (const id in META.fit) {
+    const q = lms[id]; if (!q) continue;
+    v.fromArray(META.fit[id]).applyMatrix4(headM).applyMatrix4(baseProj);
+    P.push(v.x, v.y); Q.push(q.x * 2 - 1, 1 - q.y * 2);
+    pmx += v.x; pmy += v.y; qmx += q.x * 2 - 1; qmy += 1 - q.y * 2;
+  }
+  const n = P.length / 2;
+  if (n > 2) {
+    pmx /= n; pmy /= n; qmx /= n; qmy /= n;
+    let up = 0, down = 0;
+    for (let i = 0; i < P.length; i += 2) {
+      const ax = P[i] - pmx, ay = P[i + 1] - pmy;
+      up += ax * (Q[i] - qmx) + ay * (Q[i + 1] - qmy); down += ax * ax + ay * ay;
+    }
+    const s = Math.min(1.6, Math.max(0.6, down > 1e-9 ? up / down : 1));
+    head.s += (s - head.s) * 0.5;
+    head.tx += (qmx - head.s * pmx - head.tx) * 0.7;
+    head.ty += (qmy - head.s * pmy - head.ty) * 0.7;
+  }
+  fix.set(head.s, 0, 0, head.tx, 0, head.s, 0, head.ty, 0, 0, 1, 0, 0, 0, 0, 1);
+  cam.projectionMatrix.copy(baseProj).premultiply(fix);
+  cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+  setJaw(jawOpen);
+}
+
+const orbit = { yaw: 0.5, pitch: 0.05, dist: 62, spin: true };
+function poseFromOrbit(t) {
+  if (orbit.spin) orbit.yaw += 0.004;
+  head.on = true;
+  const tall = H > W;                                     // on a phone the model sits above the text or the open sheet
+  const lift = st.mode === "idle" ? (tall ? orbit.dist * 0.33 : 0) : $("card").hidden && $("result").hidden ? 0 : (tall ? orbit.dist * 0.3 : 0);
+  const side = st.mode === "idle" && !tall ? orbit.dist * 0.3 : 0;
+  orbit.side = (orbit.side || 0) + (side - (orbit.side || 0)) * 0.15;
+  orbit.lift = (orbit.lift || 0) + (lift - (orbit.lift || 0)) * 0.15;
+  headM.makeTranslation(orbit.side, orbit.lift, -orbit.dist)
+    .multiply(tmpM.makeRotationX(orbit.pitch)).multiply(tmpM.makeRotationY(orbit.yaw))
+    .multiply(tmpM.makeTranslation(-HEAD_CENTRE.x, -HEAD_CENTRE.y, -HEAD_CENTRE.z));
+  cam.projectionMatrix.copy(baseProj); cam.projectionMatrixInverse.copy(baseProj).invert();
+  setJaw(0.25 + 0.25 * Math.sin(t / 900));
+}
+
+// ---------------------------------------------------------------- hands
+const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), e3 = new THREE.Vector3(), across = new THREE.Vector3(), hm = new THREE.Matrix4();
+function poseHand(rig, lms, flip) {
+  if (!rig.pts) rig.pts = lms.map(() => new THREE.Vector3());
+  const fresh = !rig.group.visible;
+  lms.forEach((p, i) => { v.set(p.x * W, (1 - p.y) * H, -p.z * W); fresh ? rig.pts[i].copy(v) : rig.pts[i].lerp(v, 0.65); });
+  const P = rig.pts, sign = flip ? 1 : -1;
+  // The palm piece is stored in a frame of: wrist -> index knuckle, wrist -> little knuckle, palm normal.
+  e1.subVectors(P[5], P[0]); e2.subVectors(P[17], P[0]);
+  e3.crossVectors(e1, e2).normalize().multiplyScalar(sign * Math.sqrt(e1.length() * e2.length()));
+  rig.palm.matrix.makeBasis(e1, e2, e3).setPosition(P[0]); rig.palm.matrixWorldNeedsUpdate = true;
+  // Each finger piece is stored one unit long along x, from one joint to the next.
+  across.subVectors(P[17], P[5]).normalize();
+  FINGER_BONES.forEach(([a, b], i) => {
+    e1.subVectors(P[b], P[a]); const len = Math.max(e1.length(), 1e-6); e1.divideScalar(len);
+    e2.copy(across).addScaledVector(e1, -across.dot(e1)); if (e2.lengthSq() < 1e-6) e2.set(1, 0, 0); e2.normalize();
+    e3.crossVectors(e1, e2).multiplyScalar(sign);
+    const L = len * (b % 4 === 0 ? 0.8 : 1);                // the tracked fingertip sits past the end of the last bone
+    hm.makeBasis(e1.multiplyScalar(L), e2.multiplyScalar(L), e3.multiplyScalar(L)).setPosition(P[a]);
+    rig.bones[i].matrix.copy(hm); rig.bones[i].matrixWorldNeedsUpdate = true;
+  });
+  rig.group.visible = true;
+}
+
+function shadeHands(g, list) {                              // darken the real hand so its bones read clearly
+  g.lineJoin = g.lineCap = "round"; g.strokeStyle = g.fillStyle = "rgba(4,7,13,0.78)";
+  for (const lms of list) {
+    const x = i => lms[i].x * W, y = i => lms[i].y * H;
+    const d = Math.hypot(x(5) - x(17), y(5) - y(17)) || 1;
+    g.lineWidth = d * 0.36; g.beginPath();
+    [0, 1, 2, 5, 9, 13, 17].forEach((i, k) => k ? g.lineTo(x(i), y(i)) : g.moveTo(x(i), y(i)));
+    g.closePath();
+    for (const f of [[1,2,3,4],[5,6,7,8],[9,10,11,12],[13,14,15,16],[17,18,19,20]]) f.forEach((i, k) => k ? g.lineTo(x(i), y(i)) : g.moveTo(x(i), y(i)));
+    g.fill(); g.stroke();
+  }
+}
+
+// ---------------------------------------------------------------- hotspots
+let dots = [];                                              // [{ part, x, y, front }]
+function toScreen(vec) {                                    // view-space point -> hud pixels
+  vec.applyMatrix4(cam.projectionMatrix);
+  const x = (vec.x + 1) / 2 * W;
+  return { x: st.mode === "mirror" ? W - x : x, y: (1 - vec.y) / 2 * H };
+}
+function collectDots(handCount) {
+  dots = [];
+  if (st.mode === "idle") return;
+  if (head.on) {
+    const centreZ = v2.copy(HEAD_CENTRE).applyMatrix4(headM).z;
+    for (const part of PARTS) {
+      if (!part.anchor || !st.layers[part.layer]) continue;
+      const a = ANCHOR[part.anchor]; if (!a) continue;
+      let best = null, bestZ = -Infinity;
+      for (const p of a.pts) {                              // for left/right pairs use the one nearer the camera
+        v.fromArray(p); if (a.jaw) v.applyMatrix4(jawM); v.applyMatrix4(headM);
+        if (v.z > bestZ) { bestZ = v.z; best = v.clone(); }
+      }
+      const s = toScreen(best);
+      dots.push({ part, x: s.x, y: s.y, front: bestZ > centreZ });
+    }
+  }
+  if (st.mode === "mirror" && st.layers.hands) for (let h = 0; h < handCount; h++) {
+    const P = hands[h].pts; if (!P) continue;
+    const at = (a, b, k) => ({ x: W - (P[a].x + (P[b].x - P[a].x) * k), y: H - (P[a].y + (P[b].y - P[a].y) * k) });
+    const spot = { carpals: at(0, 9, 0.12), metacarpals: at(0, 9, 0.62), phalanges: at(9, 10, 1) };
+    for (const part of PARTS) if (part.hand) dots.push({ part, x: spot[part.hand].x, y: spot[part.hand].y, front: true });
+  }
+}
+function nearestDot(x, y, reach) {
+  let best = null, bd = reach;
+  for (const d of dots) { const k = Math.hypot(d.x - x, d.y - y) - (d.front ? 0 : 6); if (k < bd) { bd = k; best = d; } }
+  return best;
+}
+
+function drawHud(finger) {
+  const g = $("hud").getContext("2d");
+  g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
+  const q = st.quiz, showNames = st.names && !q;
+  g.font = '600 15px "Anek Bangla", sans-serif'; g.textBaseline = "middle"; g.lineCap = "round";
+  // Names on the same side are spread out so they never sit on top of each other.
+  const lastY = { "1": -1e9, "-1": -1e9 };
+  for (const d of [...dots].sort((a, b) => a.y - b.y)) {
+    d.hot = st.selected === d.part.id ? "#ffb02e" : q && q.flash && q.flash.id === d.part.id ? q.flash.color : null;
+    d.named = (showNames && d.front) || !!d.hot;
+    if (!d.named) continue;
+    d.dir = d.x > W / 2 ? 1 : -1;
+    const room = g.measureText(d.part.bn).width + 40;       // flip a name that would run off the screen
+    if (d.dir < 0 && d.x - room < 0) d.dir = 1; else if (d.dir > 0 && d.x + room > W) d.dir = -1;
+    d.ly = Math.max(d.y, lastY[d.dir] + 21); lastY[d.dir] = d.ly;
+  }
+  for (const d of dots) {
+    const col = CONTENT.layers[d.part.layer].color, hot = d.hot;
+    g.globalAlpha = d.front || hot ? 1 : 0.4;
+    g.shadowColor = "rgba(0,0,0,.9)"; g.shadowBlur = 6;
+    g.beginPath(); g.arc(d.x, d.y, hot ? 9 : 5.5, 0, 6.3); g.lineWidth = hot ? 2.5 : 1.5; g.strokeStyle = hot || "#f1ece0"; g.stroke();
+    g.beginPath(); g.arc(d.x, d.y, 2.2, 0, 6.3); g.fillStyle = hot || col; g.fill();
+    if (d.named) {                                          // name on a short leader line, pointing away from the middle
+      const dir = d.dir, x0 = d.x + dir * (hot ? 11 : 8), x1 = d.x + dir * 28;
+      g.beginPath(); g.moveTo(x0, d.y); g.lineTo(x1, d.ly); g.lineWidth = 1; g.strokeStyle = hot || "rgba(241,236,224,.7)"; g.stroke();
+      g.textAlign = dir > 0 ? "left" : "right"; g.fillStyle = hot || "#f1ece0"; g.fillText(d.part.bn, x1 + dir * 5, d.ly + 1);
+    }
+    g.shadowBlur = 0;
+  }
+  g.globalAlpha = 1; g.textAlign = "left";
+  if (finger) {                                             // pointing ring for the quiz
+    g.beginPath(); g.arc(finger.x, finger.y, 18, 0, 6.3); g.strokeStyle = "rgba(241,236,224,.5)"; g.lineWidth = 1.5; g.stroke();
+    if (finger.hold > 0) { g.beginPath(); g.arc(finger.x, finger.y, 18, -1.57, -1.57 + 6.283 * finger.hold); g.strokeStyle = "#ffb02e"; g.lineWidth = 4; g.stroke(); }
+  }
+}
+
+// ---------------------------------------------------------------- frame loop
+let faceTracker = null, handTracker = null, stream = null, lastVideoTime = -1, lostSince = 0, running = false;
+let seenHands = [], seenFlip = [], frameNo = 0;
+function hint(t) { if ($("hint").textContent !== t) $("hint").textContent = t; }
+
+function render() {
+  for (const k in meshes) {
+    const m = meshes[k];
+    m.mesh.visible = m.layer === "veil" ? st.mode === "mirror" && !st.solid
+                   : m.layer === "outline" ? !st.solid : !!st.layers[m.layer];
+  }
+  meshes.veil.mesh.material.uniforms.uAlpha.value = 0.86;
+  headGroup.visible = head.on;
+  headGroup.matrix.copy(headM); headGroup.matrixWorldNeedsUpdate = true;
+  renderer.clear(); renderer.render(headScene, cam);
+  renderer.clearDepth(); renderer.render(handScene, ortho);
+}
+
+function tick(now) {
+  if (!running) return;
+  requestAnimationFrame(tick);
+  let finger = null;
+  if (st.mode === "mirror") {
+    if (video.readyState < 2 || video.currentTime === lastVideoTime || !faceTracker) return;
+    lastVideoTime = video.currentTime; frameNo++;
+    try {
+      const fr = faceTracker.detectForVideo(video, now);
+      const lms = fr.faceLandmarks && fr.faceLandmarks[0], mat = fr.facialTransformationMatrixes && fr.facialTransformationMatrixes[0];
+      if (lms && mat) {
+        let jaw = 0; const bs = fr.faceBlendshapes && fr.faceBlendshapes[0];
+        if (bs) for (const c of bs.categories) if (c.categoryName === "jawOpen") jaw = c.score;
+        poseFromFace(mat.data, lms, jaw); lostSince = 0;
+      } else { if (!lostSince) lostSince = now; if (now - lostSince > 300) head.on = false; }
+      const wantHands = handTracker && (st.layers.hands || st.quiz);
+      if (wantHands && frameNo % 2 === 0) {                 // hands every second frame keeps cheap phones smooth
+        const hr = handTracker.detectForVideo(video, now);
+        seenHands = hr.landmarks || [];
+        const names = hr.handedness || hr.handednesses || [];
+        seenFlip = seenHands.map((_, i) => !!(names[i] && names[i][0] && names[i][0].categoryName === "Left"));
+      } else if (!wantHands) seenHands = [];
+    } catch (err) { hint("ট্র্যাকারে সমস্যা: " + err.message); return; }
+    const showHands = st.layers.hands ? seenHands : [];
+    hands.forEach((rig, i) => { if (showHands[i]) poseHand(rig, showHands[i], seenFlip[i]); else rig.group.visible = false; });
+    const g = $("shade").getContext("2d"); g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
+    if (showHands.length && !st.solid) shadeHands(g, showHands);
+    hint(head.on ? "" : seenHands.length ? "মুখ ক্যামেরার সামনে আনো" : "মুখ খুঁজে পাচ্ছি না। আলোতে এসে সামনে তাকাও");
+    if (st.quiz && seenHands[0]) finger = { x: W - seenHands[0][8].x * W, y: seenHands[0][8].y * H, hold: 0 };
+  } else {
+    poseFromOrbit(now); hands.forEach(r => r.group.visible = false);
+  }
+  render();
+  collectDots(seenHands.length);
+  if (finger) quizPoint(finger, now);
+  drawHud(finger);
+}
+
+// ---------------------------------------------------------------- camera + modes
+async function loadTrackers() {
+  if (faceTracker) return;
+  const vision = await import(MP + "/vision_bundle.mjs");
+  const files = await vision.FilesetResolver.forVisionTasks(MP + "/wasm");
+  const make = (Kind, model, extra) => async delegate =>
+    Kind.createFromOptions(files, Object.assign({ baseOptions: { modelAssetPath: model, delegate }, runningMode: "VIDEO" }, extra));
+  const face = make(vision.FaceLandmarker, FACE_MODEL, { numFaces: 1, outputFacialTransformationMatrixes: true, outputFaceBlendshapes: true });
+  const hand = make(vision.HandLandmarker, HAND_MODEL, { numHands: 2 });
+  try { faceTracker = await face("GPU"); } catch (e) { faceTracker = await face("CPU"); }
+  try { handTracker = await hand("GPU"); } catch (e) { try { handTracker = await hand("CPU"); } catch (e2) { handTracker = null; } }
+}
+function stopCamera() { if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; video.srcObject = null; } }
+
+function status(text, bad) { const s = $("status"); s.textContent = text; s.className = "status" + (bad ? " bad" : ""); }
+
+async function enter(mode) {
+  const buttons = [$("goMirror"), $("goExplore")]; buttons.forEach(b => b.disabled = true);
+  let step = "ক্যামেরা";
+  try {
+    if (mode === "mirror") {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("এই ব্রাউজারে ক্যামেরা চালু করা যায় না। Chrome ব্যবহার করো।");
+      status("ক্যামেরার অনুমতি চাওয়া হচ্ছে…");
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 960 }, height: { ideal: 720 } }, audio: false });
+      video.srcObject = stream; await video.play();
+    }
+    step = "৩ডি মডেল"; status("৩ডি মডেল লোড হচ্ছে…");
+    await ready();
+    if (mode === "mirror") { step = "ট্র্যাকার"; status("ট্র্যাকার লোড হচ্ছে (প্রথমবার একটু সময় লাগে)…"); await loadTrackers(); }
+    else stopCamera();
+    st.mode = mode; head.on = false; lastVideoTime = -1; seenHands = [];
+    $("home").hidden = true; $("ui").hidden = false; document.body.classList.add("viewing"); scrollTo(0, 0); hint("");
+    $("stage").classList.add("live"); $("stage").classList.toggle("mirrored", mode === "mirror"); $("stage").classList.toggle("explore", mode === "explore");
+    for (const b of $("modeSeg").children) b.classList.toggle("on", b.dataset.mode === mode);
+    syncChips(); layout(); status("");
+    if (!running) { running = true; requestAnimationFrame(tick); }
+  } catch (err) {
+    stopCamera();
+    const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
+    status(denied ? "ক্যামেরার অনুমতি পাওয়া যায়নি। অনুমতি দিয়ে আবার চেষ্টা করো, অথবা ক্যামেরা ছাড়া দেখো।"
+                  : step + " চালু করা যায়নি: " + (err && err.message ? err.message : err), true);
+    if (!$("ui").hidden) hint("ক্যামেরা চালু হয়নি");
+  } finally { buttons.forEach(b => b.disabled = false); }
+}
+function goHome() {
+  stopCamera(); endQuiz(true); closeCard(); idle();
+  $("ui").hidden = true; $("home").hidden = false; document.body.classList.remove("viewing");
+}
+function idle() {                                           // the turning model behind the home page
+  st.mode = "idle"; head.on = false; orbit.spin = true; orbit.dist = 62; orbit.pitch = 0.05;
+  $("stage").classList.remove("mirrored"); $("stage").classList.add("explore", "live");
+  hands.forEach(r => r.group.visible = false); layout();
+  if (!running) { running = true; requestAnimationFrame(tick); }
+}
+
+// ---------------------------------------------------------------- controls
+function buildChips() {
+  $("layerChips").innerHTML = Object.entries(CONTENT.layers).map(([k, L]) =>
+    `<button class="chip" data-layer="${k}"><i style="background:${L.color}"></i>${esc(L.bn)}</button>`).join("");
+  for (const b of $("layerChips").children) b.onclick = () => { st.layers[b.dataset.layer] = !st.layers[b.dataset.layer]; syncChips(); };
+}
+function syncChips() {
+  for (const b of $("layerChips").children) {
+    const k = b.dataset.layer;
+    b.classList.toggle("on", !!st.layers[k]);
+    b.disabled = k === "hands" && (st.mode !== "mirror" || !handTracker);
+  }
+}
+$("goMirror").onclick = () => enter("mirror");
+$("goExplore").onclick = () => enter("explore");
+$("back").onclick = goHome;
+for (const b of $("modeSeg").children) b.onclick = () => { if (b.dataset.mode !== st.mode) { endQuiz(true); enter(b.dataset.mode); } };
+$("tNames").onclick = () => { st.names = !st.names; applyStyle(); };
+$("tStyle").onclick = () => { st.solid = !st.solid; applyStyle(); };
+$("tQuiz").onclick = startQuiz;
+$("tShot").onclick = snapshot;
+$("quizStop").onclick = () => endQuiz(true);
+$("cardClose").onclick = closeCard;
+
+// tap a dot; in model mode drag to turn, pinch or wheel to zoom
+const touches = new Map(); let moved = 0, pinch = 0;
+const hud = $("hud");
+const local = e => { const r = hud.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+hud.addEventListener("pointerdown", e => { touches.set(e.pointerId, local(e)); moved = 0; pinch = 0; hud.setPointerCapture(e.pointerId); });
+hud.addEventListener("pointermove", e => {
+  const a = touches.get(e.pointerId); if (!a) return;
+  const p = local(e), dx = p.x - a.x, dy = p.y - a.y; moved += Math.abs(dx) + Math.abs(dy); touches.set(e.pointerId, p);
+  if (st.mode !== "explore") return;
+  if (touches.size === 2) {
+    const [p1, p2] = [...touches.values()], d = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+    if (pinch) orbit.dist = Math.min(110, Math.max(28, orbit.dist * pinch / d)); pinch = d;
+  } else if (moved > 6) { orbit.spin = false; orbit.yaw += dx * 0.008; orbit.pitch = Math.min(1.2, Math.max(-1.2, orbit.pitch + dy * 0.008)); }
+});
+const lift = e => {
+  const p = touches.get(e.pointerId); touches.delete(e.pointerId);
+  if (!p || moved > 8 || e.type === "pointercancel") return;
+  const d = nearestDot(p.x, p.y, 34);
+  if (st.quiz) { if (d) quizAnswer(d.part); }
+  else if (d) openCard(d.part); else closeCard();
+};
+hud.addEventListener("pointerup", lift); hud.addEventListener("pointercancel", lift);
+hud.addEventListener("wheel", e => { if (st.mode === "explore") { e.preventDefault(); orbit.dist = Math.min(110, Math.max(28, orbit.dist * (1 + Math.sign(e.deltaY) * 0.08))); } }, { passive: false });
+
+// ---------------------------------------------------------------- part card
+function openCard(part) {
+  st.selected = part.id; orbit.spin = false;
+  $("cardBody").innerHTML =
+    `<p class="en">${esc(part.en)}</p><h3>${esc(part.bn)}</h3><p>${esc(part.about)}</p>` +
+    `<ul>${part.points.map(p => `<li>${esc(p)}</li>`).join("")}</ul>` +
+    `<p class="word">${esc(part.meaning)}</p>` +
+    `<div class="row"><a class="btn primary" href="read/${part.id}.html">বিস্তারিত পড়ো</a></div>` + promoHTML("card");
+  $("card").hidden = false; $("bottom").hidden = true;
+}
+function closeCard() { st.selected = null; $("card").hidden = true; $("bottom").hidden = !!st.quiz; }
+
+// ---------------------------------------------------------------- quiz
+function startQuiz() {
+  closeCard();
+  const pool = PARTS.filter(p => p.anchor).sort(() => Math.random() - 0.5).slice(0, QUIZ_LEN);
+  st.quiz = { pool, i: 0, score: 0, flash: null, lock: false, holdId: null, holdFrom: 0, saved: Object.assign({}, st.layers) };
+  $("quizbar").hidden = false; $("bottom").hidden = true; $("result").hidden = true;
+  nextQuestion();
+}
+function nextQuestion() {
+  const q = st.quiz; if (!q) return;
+  if (q.i >= q.pool.length) return showResult();
+  const part = q.pool[q.i];
+  for (const k in st.layers) st.layers[k] = k === part.layer;   // only the layer in question, so the dots are fair
+  q.flash = null; q.lock = false; q.holdId = null;
+  $("quizCount").textContent = `প্রশ্ন ${bnNum(q.i + 1)}/${bnNum(q.pool.length)} · স্কোর ${bnNum(q.score)}`;
+  $("quizAsk").textContent = `দেখাও: ${part.bn}`;
+}
+function quizAnswer(part) {
+  const q = st.quiz; if (!q || q.lock) return;
+  const want = q.pool[q.i]; q.lock = true;
+  if (part.id === want.id) { q.score++; q.flash = { id: want.id, color: "#7fe0a3" }; $("quizAsk").textContent = "সঠিক!"; }
+  else { q.flash = { id: want.id, color: "#ffb02e" }; $("quizAsk").textContent = `ওটা ${part.bn}। সঠিক জায়গা হলুদ বিন্দু।`; }
+  setTimeout(() => { if (st.quiz === q) { q.i++; nextQuestion(); } }, part.id === want.id ? 900 : 2200);
+}
+function quizPoint(finger, now) {                           // hold a fingertip on a dot to answer
+  const q = st.quiz; if (!q || q.lock) return;
+  const d = nearestDot(finger.x, finger.y, 30);
+  if (!d) { q.holdId = null; return; }
+  if (q.holdId !== d.part.id) { q.holdId = d.part.id; q.holdFrom = now; }
+  finger.hold = Math.min(1, (now - q.holdFrom) / 900);
+  if (finger.hold >= 1) quizAnswer(d.part);
+}
+function endQuiz(silent) {
+  const q = st.quiz; if (!q) return;
+  Object.assign(st.layers, q.saved); st.quiz = null;
+  $("quizbar").hidden = true; $("bottom").hidden = false; if (silent) $("result").hidden = true;
+  if (CONTENT) syncChips();
+}
+function showResult() {
+  const q = st.quiz, n = q.pool.length, s = q.score;
+  const line = s === n ? "দারুণ! সব ঠিক।" : s >= n * 0.6 ? "ভালো হয়েছে। আরেকবার দিলে সব পারবে।" : "আরেকটু দেখে নাও, তারপর আবার চেষ্টা করো।";
+  endQuiz(false);
+  $("resultBody").innerHTML = `<p class="score">${bnNum(s)}/${bnNum(n)}</p><p>${line}</p>` +
+    `<div class="row"><button class="btn primary" id="again">আবার খেলো</button><button class="btn line" id="tell">স্কোর শেয়ার</button><button class="btn ghost" id="done">বন্ধ</button></div>` + promoHTML("quiz");
+  $("result").hidden = false; $("bottom").hidden = true;
+  $("again").onclick = startQuiz;
+  $("done").onclick = () => { $("result").hidden = true; $("bottom").hidden = false; };
+  $("tell").onclick = () => {
+    const text = `এক্স-রে বায়োলজি কুইজে আমার স্কোর ${bnNum(s)}/${bnNum(n)}। তুমিও নিজের শরীরে জীববিজ্ঞান শেখো: https://${SITE_NAME}`;
+    if (navigator.share) navigator.share({ text }).catch(() => {});
+    else if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => { $("tell").textContent = "কপি হয়েছে"; });
+  };
+}
+
+// ---------------------------------------------------------------- photo
+async function snapshot() {
+  const r = $("stage").getBoundingClientRect(), L = $("layer").getBoundingClientRect();
+  const k = Math.min(2, Math.max(1, 1080 / r.width));
+  const c = document.createElement("canvas"); c.width = Math.round(r.width * k); c.height = Math.round(r.height * k);
+  const g = c.getContext("2d");
+  g.fillStyle = "#050607"; g.fillRect(0, 0, c.width, c.height);
+  render();                                                 // draw the 3D layer right now so its pixels can be copied
+  g.save(); g.scale(k, k); g.translate(L.left - r.left, L.top - r.top);
+  if (st.mode === "mirror") { g.save(); g.translate(W, 0); g.scale(-1, 1); g.drawImage(video, 0, 0, W, H); g.drawImage($("shade"), 0, 0, W, H); g.drawImage($("gl"), 0, 0, W, H); g.restore(); }
+  else g.drawImage($("gl"), 0, 0, W, H);
+  g.drawImage(hud, 0, 0, W, H); g.restore();
+  const pad = 18 * k; g.textBaseline = "alphabetic";
+  g.font = `700 ${Math.round(20 * k)}px "Anek Bangla", sans-serif`;
+  g.fillStyle = "rgba(3,5,10,.6)"; g.fillRect(0, c.height - 64 * k, c.width, 64 * k);
+  g.fillStyle = "#fff"; g.fillText("এক্স-রে বায়োলজি · Board & Beyond", pad, c.height - 36 * k);
+  g.font = `500 ${Math.round(14 * k)}px "JetBrains Mono", monospace`; g.fillStyle = "#ffb02e"; g.fillText(SITE_NAME, pad, c.height - 14 * k);
+  const blob = await new Promise(res => c.toBlob(res, "image/jpeg", 0.9));
+  if (!blob) return;
+  const file = new File([blob], "xray-biology.jpg", { type: "image/jpeg" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], text: `নিজের শরীরে জীববিজ্ঞান শেখো: https://${SITE_NAME}` }); return; } catch (e) { if (e.name === "AbortError") return; }
+  }
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = file.name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+// ---------------------------------------------------------------- links from books and reading pages: #part=<id> or #model
+const want = new URLSearchParams(location.hash.slice(1));
+if (!(want.has("part") || want.has("model"))) ready().then(idle).catch(() => {});
+else {
+  enter("explore").then(() => {
+    const part = PARTS.find(p => p.id === want.get("part"));
+    if (part && part.anchor) { st.layers[part.layer] = true; syncChips(); openCard(part); }
+  });
+}
