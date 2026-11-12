@@ -151,3 +151,12 @@ h2 { margin: 0 0 18px; font: 700 26px/1.25 var(--display); }
 .read .ad:empty, .read .ad { margin: 28px 0; }
 .read .fine { font-size: 13px; color: var(--dim); margin: 10px 0 0; }
 .read .rows { margin-top: 48px; }
+
+/* ---------- shared menu and footer ---------- */
+.sitetop { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; max-width: 680px; margin: 0 auto 28px; padding: 16px 20px 0; }
+.sitetop .brand { font: 800 18px/1 var(--display); text-decoration: none; }
+.menu { display: flex; gap: 16px; font: 500 12px/1.6 var(--mono); letter-spacing: .06em; }
+.menu a { text-decoration: none; color: var(--dim); }
+.sitefoot { max-width: 680px; margin: 0 auto; padding: 24px 20px 48px; border-top: 1px solid var(--line); font-size: 13px; color: var(--dim); }
+.sitefoot p { margin: 6px 0; }
+.read .ad { min-height: 280px; }

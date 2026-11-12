@@ -1,7 +1,7 @@
 # X-ray Biology (Board & Beyond)
 
 Free Bangla anatomy mirror for HSC biology and medical admission students.
-Planned address: `bandb.academy/biology`.
+Address: https://biology.bandb.academy (GitHub Pages, custom domain).
 
 ## Folders
 - `site/` : the finished website. Upload everything inside it to the `/biology` folder on the host.
