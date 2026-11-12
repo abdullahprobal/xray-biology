@@ -82,7 +82,7 @@ h2 { margin: 0 0 18px; font: 700 26px/1.25 var(--display); }
 
 /* ---------- viewer controls ---------- */
 .top { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 14px;
-  padding: calc(12px + env(safe-area-inset-top)) 14px 22px; background: linear-gradient(#050607d9, #05060700); }
+  padding: calc(12px + env(safe-area-inset-top)) 14px 30px; background: linear-gradient(#050607f2, #050607b3 55%, #05060700); }
 .back { width: 44px; height: 44px; font-size: 20px; flex: none; color: var(--bone); }
 .seg { display: flex; gap: 18px; }
 .seg button { font: 600 17px/1 var(--display); padding: 12px 0 8px; color: var(--dim); border-bottom: 2px solid transparent; }
@@ -98,7 +98,7 @@ h2 { margin: 0 0 18px; font: 700 26px/1.25 var(--display); }
 .quizbar strong { font: 700 24px/1.25 var(--display); }
 
 .bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 40px 14px calc(14px + env(safe-area-inset-bottom));
-  background: linear-gradient(#05060700, #050607f2 40%); }
+  background: linear-gradient(#05060700, #050607d9 26%, #050607f7 60%); }
 .chips { display: flex; gap: 22px; overflow-x: auto; padding: 0 6px 14px; scrollbar-width: none; }
 .chips::-webkit-scrollbar { display: none; }
 .chip { flex: none; display: flex; align-items: center; gap: 8px; font: 600 17px/1 var(--display); padding: 10px 0; color: var(--dim); }

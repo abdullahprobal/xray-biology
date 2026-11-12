@@ -388,7 +388,9 @@ function toScreen(vec) {                                    // view-space point 
 function collectDots(handCount) {
   dots = [];
   if (st.mode === "idle") return;
-  if (st.subject === "body") { if (BODY && body.on) bodyDots(); return; }
+  const mirror = st.mode === "mirror";
+  if (BODY && body.on && (mirror || st.subject === "body")) bodyDots();
+  if (!mirror && st.subject === "body") return;
   if (head.on) {
     const centreZ = v2.copy(HEAD_CENTRE).applyMatrix4(headM).z;
     for (const part of PARTS) {
@@ -454,11 +456,11 @@ function drawHud(finger) {
 
 // ---------------------------------------------------------------- frame loop
 let faceTracker = null, handTracker = null, poseTracker = null, makeTracker = null, stream = null, lastVideoTime = -1, lostSince = 0, running = false;
-let seenHands = [], seenFlip = [], frameNo = 0;
+let seenHands = [], seenFlip = [], frameNo = 0, lastPose = null, bodyLost = 0, bodyState = "";
 function hint(t) { if ($("hint").textContent !== t) $("hint").textContent = t; }
 
 function render() {
-  const bodyOn = st.subject === "body";
+  const mirror = st.mode === "mirror", showBody = mirror || st.subject === "body", showHead = mirror || st.subject !== "body";
   for (const k in meshes) {
     const m = meshes[k];
     m.mesh.visible = m.layer === "veil" ? st.mode === "mirror" && !st.solid
@@ -466,10 +468,10 @@ function render() {
   }
   meshes.veil.mesh.material.uniforms.uAlpha.value = 0.86;
   if (BODY) {
-    bodyGroup.visible = limbGroup.visible = bodyOn && body.on;
+    bodyGroup.visible = limbGroup.visible = showBody && body.on;
     for (const k in bodyMeshes) { const m = bodyMeshes[k]; m.mesh.visible = !!st.layers[m.layer] && (!m.limb || m.seen); }
   }
-  headGroup.visible = head.on && !bodyOn;
+  headGroup.visible = head.on && showHead;
   headGroup.matrix.copy(headM); headGroup.matrixWorldNeedsUpdate = true;
   renderer.clear(); renderer.render(headScene, cam);
   renderer.clearDepth(); renderer.render(handScene, ortho);
@@ -480,44 +482,50 @@ function tick(now) {
   requestAnimationFrame(tick);
   let finger = null;
   if (st.mode === "mirror") {
-    const bodyOn = st.subject === "body";
-    if (video.readyState < 2 || video.currentTime === lastVideoTime || !(bodyOn ? poseTracker && BODY : faceTracker)) return;
+    if (video.readyState < 2 || video.currentTime === lastVideoTime || !faceTracker) return;
     lastVideoTime = video.currentTime; frameNo++;
-    const g = $("shade").getContext("2d"); g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
-    if (bodyOn) {
-      let lm = null;
-      try { const pr = poseTracker.detectForVideo(video, now); lm = pr.landmarks && pr.landmarks[0]; }
-      catch (err) { hint("ট্র্যাকারে সমস্যা: " + err.message); return; }
-      if (lm) poseBody(lm); else body.on = false;
-      hands.forEach(r => r.group.visible = false); head.on = false;
-      if (body.on && !st.solid) shadeBody(g);
-      hint(body.on ? "" : "একটু পিছিয়ে দাঁড়াও। দুই কাঁধ ক্যামেরায় দেখা যাক");
-      if (st.quiz && lm && body.on) {                       // point with either index finger
-        const i = (lm[19].visibility || 0) > (lm[20].visibility || 0) ? 19 : 20;
-        if ((lm[i].visibility || 0) > 0.6) finger = { x: W - lm[i].x * W, y: lm[i].y * H, hold: 0 };
-      }
-    } else {
+    const L = st.layers;
+    const wantFace = L.skull || L.brain || L.muscles || L.eyes;
+    const wantHands = handTracker && (L.hands || st.quiz);
+    const wantBody = poseTracker && BODY && (L.skeleton || L.chest || L.digest || L.excretory);
+    const turn = wantHands && wantBody ? frameNo % 2 : -1;  // the two heavier trackers take turns on cheap phones
     try {
-      const fr = faceTracker.detectForVideo(video, now);
-      const lms = fr.faceLandmarks && fr.faceLandmarks[0], mat = fr.facialTransformationMatrixes && fr.facialTransformationMatrixes[0];
-      if (lms && mat) {
-        let jaw = 0; const bs = fr.faceBlendshapes && fr.faceBlendshapes[0];
-        if (bs) for (const c of bs.categories) if (c.categoryName === "jawOpen") jaw = c.score;
-        poseFromFace(mat.data, lms, jaw); lostSince = 0;
-      } else { if (!lostSince) lostSince = now; if (now - lostSince > 300) head.on = false; }
-      const wantHands = handTracker && (st.layers.hands || st.quiz);
-      if (wantHands && frameNo % 2 === 0) {                 // hands every second frame keeps cheap phones smooth
+      if (wantFace) {
+        const fr = faceTracker.detectForVideo(video, now);
+        const lms = fr.faceLandmarks && fr.faceLandmarks[0], mat = fr.facialTransformationMatrixes && fr.facialTransformationMatrixes[0];
+        if (lms && mat) {
+          let jaw = 0; const bs = fr.faceBlendshapes && fr.faceBlendshapes[0];
+          if (bs) for (const c of bs.categories) if (c.categoryName === "jawOpen") jaw = c.score;
+          poseFromFace(mat.data, lms, jaw); lostSince = 0;
+        } else { if (!lostSince) lostSince = now; if (now - lostSince > 300) head.on = false; }
+      } else head.on = false;
+      if (wantHands && turn !== 1) {
         const hr = handTracker.detectForVideo(video, now);
         seenHands = hr.landmarks || [];
         const names = hr.handedness || hr.handednesses || [];
         seenFlip = seenHands.map((_, i) => !!(names[i] && names[i][0] && names[i][0].categoryName === "Left"));
       } else if (!wantHands) seenHands = [];
+      if (wantBody && turn !== 0) {                         // the body is found on its own; no face needed
+        const pr = poseTracker.detectForVideo(video, now);
+        lastPose = pr.landmarks && pr.landmarks[0] || null;
+        if (lastPose) { poseBody(lastPose); if (body.on) bodyLost = 0; }
+        if (!lastPose || !body.on) { if (!bodyLost) bodyLost = now; body.on = body.on && now - bodyLost < 400; }
+      } else if (!wantBody) { body.on = false; lastPose = null; }
     } catch (err) { hint("ট্র্যাকারে সমস্যা: " + err.message); return; }
-    const showHands = st.layers.hands ? seenHands : [];
+    const showHands = L.hands ? seenHands : [];
     hands.forEach((rig, i) => { if (showHands[i]) poseHand(rig, showHands[i], seenFlip[i]); else rig.group.visible = false; });
-    if (showHands.length && !st.solid) shadeHands(g, showHands);
-    hint(head.on ? "" : seenHands.length ? "মুখ ক্যামেরার সামনে আনো" : "মুখ খুঁজে পাচ্ছি না। আলোতে এসে সামনে তাকাও");
-    if (st.quiz && seenHands[0]) finger = { x: W - seenHands[0][8].x * W, y: seenHands[0][8].y * H, hold: 0 };
+    const g = $("shade").getContext("2d"); g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
+    if (!st.solid) { if (body.on) shadeBody(g); if (showHands.length) shadeHands(g, showHands); }
+    hint(bodyState === "loading" && !head.on ? "শরীরের মডেল লোড হচ্ছে…"
+       : bodyState === "failed" ? "শরীরের মডেল লোড হয়নি। পেজ রিফ্রেশ করো"
+       : head.on || body.on || seenHands.length ? ""
+       : "ক্যামেরার সামনে এসো। আলো যেন গায়ে পড়ে");
+    if (st.quiz) {
+      if (seenHands[0]) finger = { x: W - seenHands[0][8].x * W, y: seenHands[0][8].y * H, hold: 0 };
+      else if (lastPose && body.on) {                       // far from the camera: point with either index finger
+        const i = (lastPose[19].visibility || 0) > (lastPose[20].visibility || 0) ? 19 : 20;
+        if ((lastPose[i].visibility || 0) > 0.6) finger = { x: W - lastPose[i].x * W, y: lastPose[i].y * H, hold: 0 };
+      }
     }
   } else {
     poseFromOrbit(now); hands.forEach(r => r.group.visible = false);
@@ -546,6 +554,12 @@ async function loadPose() {
   await loadTrackers();
   try { poseTracker = await makeTracker("GPU"); } catch (e) { poseTracker = await makeTracker("CPU"); }
 }
+async function fakeCamera(url) {                             // test hook: #test=<image address> stands in for the camera
+  const img = new Image(); img.crossOrigin = "anonymous"; img.src = url; await img.decode();
+  const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const g = c.getContext("2d"); g.drawImage(img, 0, 0); setInterval(() => g.drawImage(img, 0, 0), 66);
+  return c.captureStream(15);
+}
 function stopCamera() { if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; video.srcObject = null; } }
 
 function status(text, bad) { const s = $("status"); s.textContent = text; s.className = "status" + (bad ? " bad" : ""); }
@@ -557,18 +571,26 @@ async function enter(mode) {
     if (mode === "mirror") {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("এই ব্রাউজারে ক্যামেরা চালু করা যায় না। Chrome ব্যবহার করো।");
       status("ক্যামেরার অনুমতি চাওয়া হচ্ছে…");
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 960 }, height: { ideal: 720 } }, audio: false });
-      video.srcObject = stream; await video.play();
+      if (!stream) {                                        // never open the camera twice: many phones refuse
+        stream = want.get("test") ? await fakeCamera(want.get("test"))
+               : await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 960 }, height: { ideal: 720 } }, audio: false });
+        video.srcObject = stream; await video.play();
+      }
     }
     step = "৩ডি মডেল"; status("৩ডি মডেল লোড হচ্ছে…");
     await ready();
-    if (st.subject === "body") await ensureBody();
     if (mode === "mirror") {
       step = "ট্র্যাকার"; status("ট্র্যাকার লোড হচ্ছে (প্রথমবার একটু সময় লাগে)…"); hint("লোড হচ্ছে…");
-      await (st.subject === "body" ? loadPose() : loadTrackers());
-    } else stopCamera();
+      await loadTrackers();
+      if (!poseTracker && bodyState !== "loading") {        // the body models and tracker arrive in the background
+        bodyState = "loading";
+        Promise.all([ensureBody(), loadPose()]).then(() => { bodyState = ""; placeBody(); })
+          .catch(err => { bodyState = "failed"; console.error("body", err); });
+      }
+    } else { stopCamera(); if (st.subject === "body") await ensureBody(); }
     st.mode = mode; head.on = false; lastVideoTime = -1; seenHands = []; placeBody();
     orbit.dist = st.subject === "body" ? 175 : 62;
+    $("subjectSeg").hidden = mode === "mirror";
     for (const b of $("subjectSeg").children) b.classList.toggle("on", b.dataset.subject === st.subject);
     buildChips();
     $("home").hidden = true; $("ui").hidden = false; document.body.classList.add("viewing"); scrollTo(0, 0); hint("");
@@ -597,7 +619,7 @@ function idle() {                                           // the turning model
 
 // ---------------------------------------------------------------- controls
 function buildChips() {
-  $("layerChips").innerHTML = Object.entries(CONTENT.layers).filter(([, L]) => (L.subject || "head") === st.subject).map(([k, L]) =>
+  $("layerChips").innerHTML = Object.entries(CONTENT.layers).filter(([, L]) => st.mode === "mirror" || (L.subject || "head") === st.subject).map(([k, L]) =>
     `<button class="chip" data-layer="${k}"><i style="background:${L.color}"></i>${esc(L.bn)}</button>`).join("");
   for (const b of $("layerChips").children) b.onclick = () => { st.layers[b.dataset.layer] = !st.layers[b.dataset.layer]; syncChips(); };
 }
@@ -662,7 +684,10 @@ function closeCard() { st.selected = null; $("card").hidden = true; $("bottom").
 // ---------------------------------------------------------------- quiz
 function startQuiz() {
   closeCard();
-  const pool = PARTS.filter(p => (st.subject === "body" ? p.body || p.limb : p.anchor)).sort(() => Math.random() - 0.5).slice(0, QUIZ_LEN);
+  const isBody = p => p.body || (p.limb && p.limb.some(n => bodyMeshes[n] && bodyMeshes[n].seen));
+  const can = st.mode === "mirror" ? p => (p.anchor && head.on) || (body.on && isBody(p)) : p => (st.subject === "body" ? p.body || p.limb : p.anchor);
+  let pool0 = PARTS.filter(can); if (!pool0.length) pool0 = PARTS.filter(p => p.anchor);
+  const pool = pool0.sort(() => Math.random() - 0.5).slice(0, QUIZ_LEN);
   st.quiz = { pool, i: 0, score: 0, flash: null, lock: false, holdId: null, holdFrom: 0, saved: Object.assign({}, st.layers) };
   $("quizbar").hidden = false; $("bottom").hidden = true; $("result").hidden = true;
   nextQuestion();
@@ -742,9 +767,10 @@ async function snapshot() {
 
 // ---------------------------------------------------------------- links from books and reading pages: #part=<id> or #model
 const want = new URLSearchParams(location.hash.slice(1));
-if (!(want.has("part") || want.has("model"))) ready().then(idle).catch(() => {});
+if (!(want.has("part") || want.has("model") || want.has("test"))) ready().then(idle).catch(() => {});
 else {
   if (want.get("model") === "body") st.subject = "body";
+  if (want.has("test")) enter("mirror"); else
   getJSON("data/parts.json").then(c => {
     const part = c.parts.find(p => p.id === want.get("part"));
     if (part && (part.body || part.limb)) st.subject = "body";
