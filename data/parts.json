@@ -28,7 +28,8 @@
    "bn": "হাতের অস্থি",
    "en": "Hand bones",
    "color": "#d9f0ff",
-   "subject": "head"
+   "subject": "head",
+   "short": "হাত"
   },
   "skeleton": {
    "bn": "কঙ্কাল",
@@ -40,19 +41,22 @@
    "bn": "হৃৎপিণ্ড ও ফুসফুস",
    "en": "Heart and lungs",
    "color": "#ff5d6c",
-   "subject": "body"
+   "subject": "body",
+   "short": "হৃৎপিণ্ড-ফুসফুস"
   },
   "digest": {
    "bn": "পরিপাকতন্ত্র",
    "en": "Digestive system",
    "color": "#ffc37a",
-   "subject": "body"
+   "subject": "body",
+   "short": "পরিপাক"
   },
   "excretory": {
    "bn": "রেচনতন্ত্র",
    "en": "Excretory system",
    "color": "#9be8c9",
-   "subject": "body"
+   "subject": "body",
+   "short": "রেচন"
   }
  },
  "parts": [
