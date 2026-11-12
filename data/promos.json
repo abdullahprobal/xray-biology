@@ -1,0 +1,11 @@
+{
+  "_note": "Change text and links here, then run: node tools/build.mjs. One promotion per screen. 'slot' decides where it shows: home, card, quiz, read.",
+  "promos": [
+    { "slot": "home", "title": "Board Radar বই", "text": "বোর্ড প্রশ্ন বিশ্লেষণ করে সাজানো সাজেশন বই।", "label": "বই দেখো", "url": "https://bandb.academy/" },
+    { "slot": "home", "title": "Board & Beyond কোর্স", "text": "অভিজ্ঞ ভাইয়া-আপুদের সাথে অনলাইন ক্লাস।", "label": "কোর্স দেখো", "url": "https://bandb.academy/" },
+    { "slot": "home", "title": "StoryVocabs", "text": "গল্পে গল্পে ইংরেজি শব্দ শেখো।", "label": "ঘুরে দেখো", "url": "https://storyvocabs.com/" },
+    { "slot": "card", "title": "ইংরেজি শব্দ সহজে শেখো", "text": "জীববিজ্ঞানের বেশিরভাগ নাম ইংরেজি। শব্দ শিখলে মনে রাখা সহজ।", "label": "StoryVocabs", "url": "https://storyvocabs.com/" },
+    { "slot": "quiz", "title": "আরও ভালো করতে চাও?", "text": "Board & Beyond এর কোর্স ও Board Radar বই দিয়ে প্রস্তুতি নাও।", "label": "bandb.academy", "url": "https://bandb.academy/" },
+    { "slot": "read", "title": "Board Radar বই", "text": "কোন অধ্যায় থেকে বোর্ডে বেশি প্রশ্ন আসে, বইয়ে সাজানো আছে।", "label": "বই দেখো", "url": "https://bandb.academy/" }
+  ]
+}

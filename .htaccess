@@ -1,0 +1,13 @@
+# Upload the whole site/ folder as /biology on bandb.academy
+AddType application/octet-stream .bin
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css application/javascript application/json application/octet-stream text/markdown
+</IfModule>
+<IfModule mod_headers.c>
+  <FilesMatch "\.(bin)$">
+    Header set Cache-Control "public, max-age=2592000"
+  </FilesMatch>
+  <FilesMatch "\.(js|css|json|html)$">
+    Header set Cache-Control "public, max-age=3600"
+  </FilesMatch>
+</IfModule>

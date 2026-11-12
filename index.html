@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>এক্স-রে বায়োলজি | নিজের শরীরে জীববিজ্ঞান শেখো | Board &amp; Beyond</title>
+<meta name="description" content="ক্যামেরায় নিজের মাথার ভেতরের করোটি, মস্তিষ্ক, পেশি ও হাতের অস্থি দেখো। HSC জীববিজ্ঞান ও মেডিকেল ভর্তি প্রস্তুতির জন্য বিনামূল্যের বাংলা টুল।">
+<meta name="theme-color" content="#050607">
+<meta property="og:title" content="এক্স-রে বায়োলজি | Board &amp; Beyond">
+<meta property="og:description" content="নিজের ভেতরটা দেখো। করোটি, মস্তিষ্ক আর পেশি, তোমার নিজের শরীরেই। একদম ফ্রি।">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anek+Bangla:wdth,wght@75..125,400..800&family=Hind+Siliguri:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="app">
+
+<div id="viewer">
+  <div class="stage explore" id="stage">
+    <div class="layer" id="layer">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="shade"></canvas>
+      <canvas id="gl"></canvas>
+      <canvas id="hud"></canvas>
+    </div>
+  </div>
+
+  <div id="ui" hidden>
+    <header class="top">
+      <button class="back" id="back" aria-label="হোম">←</button>
+      <div class="seg" id="modeSeg">
+        <button data-mode="mirror">আয়না</button>
+        <button data-mode="explore">মডেল</button>
+      </div>
+      <span class="hint" id="hint"></span>
+    </header>
+
+    <div class="quizbar" id="quizbar" hidden>
+      <div><span id="quizCount"></span><strong id="quizAsk"></strong></div>
+      <button class="back" id="quizStop" aria-label="কুইজ বন্ধ">✕</button>
+    </div>
+
+    <footer class="bottom" id="bottom">
+      <div class="chips" id="layerChips"></div>
+      <div class="tools">
+        <button id="tNames" class="tool">নাম</button>
+        <button id="tStyle" class="tool">এক্স-রে</button>
+        <button id="tShot" class="tool">ছবি তোলো</button>
+        <button id="tQuiz" class="tool go">কুইজ দাও</button>
+      </div>
+    </footer>
+
+    <aside class="sheet" id="card" hidden>
+      <button class="back close" id="cardClose" aria-label="বন্ধ">✕</button>
+      <div id="cardBody"></div>
+    </aside>
+
+    <aside class="sheet" id="result" hidden>
+      <div id="resultBody"></div>
+    </aside>
+  </div>
+</div>
+
+<main id="home">
+  <section class="hero">
+    <nav class="bar">
+      <a class="mark" href="https://bandb.academy/?utm_source=biology&utm_medium=mark">Board &amp; Beyond</a>
+      <a href="read/index.html">সব অংশ পড়ো</a>
+    </nav>
+    <div class="hero-in">
+      <h1>নিজের ভেতরটা<br>দেখো।</h1>
+      <p class="lead">ক্যামেরা চালু করো। তোমার করোটি, মস্তিষ্ক, পেশি আর হাতের অস্থি ফুটে উঠবে তোমার নিজের শরীরেই।</p>
+      <div class="cta">
+        <button class="btn primary" id="goMirror">ক্যামেরা চালু করো</button>
+        <button class="btn ghost" id="goExplore">ক্যামেরা ছাড়া দেখো →</button>
+      </div>
+      <p class="status" id="status" role="status"></p>
+      <p class="note">ফ্রি · লগইন লাগে না · তোমার ভিডিও ফোনের বাইরে যায় না</p>
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>যা যা দেখবে</h2>
+    <ul class="index">
+      <li><a href="read/index.html"><b>করোটি</b><span>Skull</span><i>৯টি অংশ</i></a></li>
+      <li><a href="read/index.html"><b>মস্তিষ্ক</b><span>Brain</span><i>৭টি অংশ</i></a></li>
+      <li><a href="read/index.html"><b>মুখের পেশি</b><span>Facial muscles</span><i>৯টি অংশ</i></a></li>
+      <li><a href="read/index.html"><b>চোখ</b><span>Eye</span><i>১টি অংশ</i></a></li>
+      <li><a href="read/index.html"><b>হাতের অস্থি</b><span>Hand bones</span><i>২৭টি অস্থি</i></a></li>
+    </ul>
+    <p class="prose">বিন্দুতে চাপ দিলে অংশের নাম, কাজ আর মনে রাখার তথ্য আসে। কুইজে প্রশ্ন আসে, তুমি নিজের মাথায় আঙুল রেখে উত্তর দাও। মুখ খুললে চোয়াল নড়ে, হাত তুললে হাতের অস্থি দেখা যায়।</p>
+  </section>
+
+  <section class="band">
+    <h2>Board &amp; Beyond থেকে আরও</h2>
+    <div id="homePromos" class="rows"></div>
+  </section>
+
+  <footer class="foot">
+    <p>এখানে দেখানো গঠন একজন প্রাপ্তবয়স্ক মানুষের আদর্শ মডেল, তোমার নিজের স্ক্যান নয়। এটি চিকিৎসার কাজে ব্যবহারের জন্য নয়।</p>
+    <p class="mono">Anatomy models: BodyParts3D, © The Database Center for Life Science, licensed under CC Attribution-Share Alike 2.1 Japan. Models were simplified and re-aligned. <a href="MODELS-LICENSE.md">Details</a></p>
+  </footer>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
