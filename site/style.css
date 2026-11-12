@@ -87,7 +87,10 @@ h2 { margin: 0 0 18px; font: 700 26px/1.25 var(--display); }
 .seg { display: flex; gap: 18px; }
 .seg button { font: 600 17px/1 var(--display); padding: 12px 0 8px; color: var(--dim); border-bottom: 2px solid transparent; }
 .seg button.on { color: var(--bone); border-color: var(--bone); }
-.hint { font-size: 14px; color: var(--lamp); min-width: 0; flex: 1; text-align: right; }
+.seg.right { margin-left: auto; padding-right: 6px; }
+.hint { position: absolute; left: 20px; right: 20px; top: calc(70px + env(safe-area-inset-top)); margin: 0; font-size: 15px; color: var(--lamp);
+  text-shadow: 0 1px 6px #000; pointer-events: none; }
+.hint:empty { display: none; }
 
 .quizbar { position: absolute; left: 0; right: 0; top: calc(62px + env(safe-area-inset-top)); display: flex; align-items: center;
   justify-content: space-between; gap: 10px; padding: 12px 6px 14px 20px; background: var(--film); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }

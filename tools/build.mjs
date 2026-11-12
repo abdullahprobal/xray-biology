@@ -54,7 +54,7 @@ const urls = ["", "read/index.html"];
 content.parts.forEach((p, i) => {
   const L = content.layers[p.layer];
   const mates = content.parts.filter(o => o.layer === p.layer && o.id !== p.id);
-  const see = p.anchor
+  const see = !p.hand
     ? `<a class="btn primary" href="../index.html#part=${p.id}">৩ডি মডেলে দেখো</a>`
     : `<a class="btn primary" href="../index.html">ক্যামেরায় নিজের হাতে দেখো</a>`;
   const body = `<p class="en">${esc(p.en)} · ${esc(L.en)}</p>
