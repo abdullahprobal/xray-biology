@@ -7,7 +7,7 @@ const MODELS = "https://storage.googleapis.com/mediapipe-models/";
 const FACE_MODEL = MODELS + "face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 const HAND_MODEL = MODELS + "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 const POSE_MODEL = MODELS + "pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
-const SITE_NAME = "bandb.academy/biology";
+const SITE_NAME = "biology.bandb.academy";
 const QUIZ_LEN = 8;
 
 const $ = id => document.getElementById(id);
