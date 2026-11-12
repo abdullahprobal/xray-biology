@@ -1,6 +1,7 @@
 // Builds the reading pages and copies content into site/. Run: node tools/build.mjs
 // Edit content/parts.json and content/promos.json, never the generated files in site/read or site/data.
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -90,3 +91,15 @@ writeFileSync(join(root, "site/sitemap.xml"),
   `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
   urls.map(u => `  <url><loc>${BASE}${u}</loc></url>`).join("\n") + `\n</urlset>\n`);
 console.log("reading pages:", content.parts.length + 1);
+
+// Version tag: one short hash of everything a phone downloads, stamped on app.js and style.css links,
+// so a phone never mixes old and new files. app.js passes the same tag on to its data requests.
+const hash = createHash("sha1");
+for (const f of ["site/app.js", "site/style.css", "site/data/parts.json", "site/data/promos.json",
+                 "site/assets/anatomy.json", "site/assets/anatomy.bin", "site/assets/body.json", "site/assets/body.bin"]) hash.update(readFileSync(join(root, f)));
+const VER = hash.digest("hex").slice(0, 8);
+const stamp = html => html.replace(/(href|src)="((?:\.\.\/)?(?:style\.css|app\.js))(?:\?v=\w+)?"/g, `$1="$2?v=${VER}"`);
+for (const f of ["site/index.html", ...readdirSync(join(root, "site/read")).filter(x => x.endsWith(".html")).map(x => "site/read/" + x)]) {
+  const path = join(root, f); writeFileSync(path, stamp(readFileSync(path, "utf8")));
+}
+console.log("version:", VER);

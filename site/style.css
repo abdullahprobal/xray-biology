@@ -99,13 +99,16 @@ h2 { margin: 0 0 18px; font: 700 26px/1.25 var(--display); }
 
 .bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 40px 14px calc(14px + env(safe-area-inset-bottom));
   background: linear-gradient(#05060700, #050607d9 26%, #050607f7 60%); }
-.chips { display: flex; gap: 22px; overflow-x: auto; padding: 0 6px 14px; scrollbar-width: none; }
-.chips::-webkit-scrollbar { display: none; }
-.chip { flex: none; display: flex; align-items: center; gap: 8px; font: 600 17px/1 var(--display); padding: 10px 0; color: var(--dim); }
-.chip i { width: 8px; height: 8px; border-radius: 50%; opacity: .35; }
-.chip.on { color: var(--bone); }
-.chip.on i { opacity: 1; }
+.chips { display: grid; gap: 6px; padding: 0 0 12px; }
+.lrow { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.lname { width: 34px; flex: none; font: 600 12px/1 var(--display); color: var(--dim); }
+.chip { flex: none; display: flex; align-items: center; gap: 6px; font: 600 13px/1 var(--display); padding: 7px 8px;
+  border: 1px solid var(--line); border-radius: 4px; color: var(--dim); background: #050607b3; }
+.chip i { width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 1px #0009; }
+.chip.on { background: var(--bone); border-color: var(--bone); color: var(--film); }
+.chip.all { border-color: transparent; background: none; color: var(--lamp); }
 .chip:disabled { opacity: .3; }
+@media (max-width: 480px) { .lname { display: none; } }
 .tools { display: grid; grid-template-columns: 1fr 1fr 1.25fr 1.5fr; gap: 8px; }
 .tool { font: 600 16px/1 var(--display); padding: 16px 4px; border: 1px solid var(--line); border-radius: 4px; background: #0e0f10cc; }
 .tool.on { border-color: var(--bone); }

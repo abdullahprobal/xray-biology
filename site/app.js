@@ -13,7 +13,36 @@ const QUIZ_LEN = 8;
 const $ = id => document.getElementById(id);
 const bnNum = n => String(n).replace(/\d/g, d => "০১২৩৪৫৬৭৮৯"[d]);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const getJSON = u => fetch(u).then(r => { if (!r.ok) throw new Error(u + " " + r.status); return r.json(); });
+const VER = new URL(import.meta.url).searchParams.get("v") || "";   // build.mjs stamps ?v=<hash> on app.js
+const withV = u => (VER ? u + (u.includes("?") ? "&" : "?") + "v=" + VER : u);
+const getJSON = u => fetch(withV(u)).then(r => { if (!r.ok) throw new Error(u + " " + r.status); return r.json(); });
+const getBin = u => fetch(withV(u)).then(r => { if (!r.ok) throw new Error(u + " " + r.status); return r.arrayBuffer(); });
+const store = {                                              // per-phone settings; private windows may refuse storage
+  get(k, d) { try { const x = JSON.parse(localStorage.getItem("xrb." + k)); return x === null ? d : x; } catch (e) { return d; } },
+  set(k, x) { try { localStorage.setItem("xrb." + k, JSON.stringify(x)); } catch (e) {} },
+};
+const DEBUG = /(^#|&)debug(&|=|$)/.test(location.hash);
+const MAX_NAMES = 8;
+const NAME_LABEL = { bn: "বাংলা", en: "English", off: "নাম বন্ধ" };
+
+// One-Euro filter: steady when still, quick when moving (Casiez et al. 2012).
+class OneEuro {
+  constructor(minCut, beta) { this.minCut = minCut; this.beta = beta; this.x = null; }
+  reset() { this.x = null; }
+  run(x, t) {
+    if (this.x === null) { this.x = x; this.dx = 0; this.t = t; return x; }
+    const dt = Math.max(t - this.t, 1e-3); this.t = t;
+    const a = c => 1 / (1 + 1 / (2 * Math.PI * c * dt));
+    this.dx += a(1) * ((x - this.x) / dt - this.dx);
+    this.x += a(this.minCut + this.beta * Math.abs(this.dx)) * (x - this.x);
+    return this.x;
+  }
+}
+class PointFilter {
+  constructor(minCut, beta) { this.f = [0, 1, 2].map(() => new OneEuro(minCut, beta)); }
+  reset() { this.f.forEach(f => f.reset()); }
+  apply(p, now) { const t = now / 1000; return p.set(this.f[0].run(p.x, t), this.f[1].run(p.y, t), this.f[2].run(p.z, t)); }
+}
 
 // ---------------------------------------------------------------- state
 const st = {
@@ -21,15 +50,18 @@ const st = {
   subject: "head",                 // "head" (face + hands) | "body" (everything below the neck)
   layers: { skull: true, brain: false, muscles: false, eyes: true, hands: true,
             skeleton: true, chest: true, digest: false, excretory: false },
-  solid: false, names: true, selected: null, quiz: null,
+  solid: false, names: "bn", selected: null, quiz: null, lastLayer: null,
 };
+Object.assign(st.layers, store.get("layers", {}));
+if (NAME_LABEL[store.get("names")]) st.names = store.get("names");
 let META, CONTENT, PROMOS = [], PARTS = [], ANCHOR = {};
-let renderer, headScene, handScene, cam, ortho, baseProj, headGroup, jawPivot;
+let renderer, headScene, handScene, bodyScene, cam, ortho, baseProj, headGroup, jawPivot;
 let W = 2, H = 2, DPR = 1;
 const meshes = {};                 // name -> { mesh, layer }
 const hands = [];                  // two rigs: { group, palm, bones[], pts[] }
 const FINGER_BONES = [[1,2],[2,3],[3,4],[5,6],[6,7],[7,8],[9,10],[10,11],[11,12],[13,14],[14,15],[15,16],[17,18],[18,19],[19,20]];
 const HEAD_CENTRE = new THREE.Vector3(0, 3, -5);
+const SKULL_BASE = new THREE.Vector3(0, -1.5, -5.5);         // under the skull, where the neck meets it (head space, cm)
 
 // ---------------------------------------------------------------- promotions
 function promoHTML(slot, all) {
@@ -100,7 +132,7 @@ function unpack(list, bin) {
 async function build() {
   const [meta, content, bin] = await Promise.all([
     getJSON("assets/anatomy.json"), getJSON("data/parts.json"),
-    fetch("assets/anatomy.bin").then(r => { if (!r.ok) throw new Error("anatomy.bin"); return r.arrayBuffer(); }),
+    getBin("assets/anatomy.bin"),
     document.fonts ? document.fonts.load('600 15px "Anek Bangla"', "অ").catch(() => {}) : null,
   ]);
   META = meta; CONTENT = content; PARTS = content.parts;
@@ -109,7 +141,7 @@ async function build() {
 
   renderer = new THREE.WebGLRenderer({ canvas: $("gl"), alpha: true, antialias: true });
   renderer.setClearColor(0x000000, 0); renderer.autoClear = false;
-  headScene = new THREE.Scene(); handScene = new THREE.Scene();
+  headScene = new THREE.Scene(); handScene = new THREE.Scene(); bodyScene = new THREE.Scene();
   cam = new THREE.PerspectiveCamera(63, 1, 1, 5000);        // MediaPipe's face pose assumes a 63 degree vertical view
   ortho = new THREE.OrthographicCamera(0, 1, 1, 0, -5000, 5000);
   headGroup = new THREE.Group(); headGroup.matrixAutoUpdate = false; headGroup.visible = false; headScene.add(headGroup);
@@ -152,7 +184,7 @@ const BODY_LOOK = {                // glow colour, solid colour, glow strength
 function ensureBody() { return bodyPromise || (bodyPromise = buildBody()); }
 async function buildBody() {
   const [meta, bin] = await Promise.all([getJSON("assets/body.json"),
-    fetch("assets/body.bin").then(r => { if (!r.ok) throw new Error("body.bin"); return r.arrayBuffer(); })]);
+    getBin("assets/body.bin")]);
   const geo = unpack(meta.meshes, bin);
   bodyGroup = new THREE.Group(); limbGroup = new THREE.Group();
   bodyGroup.matrixAutoUpdate = limbGroup.matrixAutoUpdate = false;
@@ -160,8 +192,9 @@ async function buildBody() {
     const look = BODY_LOOK[m.name] || [0xe6eef8, 0xe8e1cf, 1];
     const mesh = new THREE.Mesh(geo[m.name], material(look[0], look[1], look[2]));
     mesh.frustumCulled = false; mesh.renderOrder = m.layer === "skeleton" ? 1 : 2;
-    const info = { mesh, layer: m.layer, limb: m.limb || null, rest: null };
-    if (m.limb) {
+    const info = { mesh, layer: m.layer, limb: m.limb || null, rest: null,
+                   neck: m.neck ? [new THREE.Vector3().fromArray(m.neck), new THREE.Vector3().fromArray(m.neckTop)] : null };
+    if (m.limb || m.neck) {
       const r = m.rest; mesh.matrixAutoUpdate = false;
       info.rest = new THREE.Matrix4().set(r[0], r[3], r[6], r[9], r[1], r[4], r[7], r[10], r[2], r[5], r[8], r[11], 0, 0, 0, 1);
       limbGroup.add(mesh);
@@ -173,38 +206,75 @@ async function buildBody() {
 function placeBody() {                                      // camera view draws in screen space, model view in 3D space
   if (!BODY) return;
   const flat = st.mode === "mirror";
-  (flat ? handScene : headScene).add(bodyGroup, limbGroup);
+  (flat ? bodyScene : headScene).add(bodyGroup, limbGroup);
   for (const k in bodyMeshes) bodyMeshes[k].mesh.material.uniforms.uFlatView.value = flat ? 1 : 0;
   body.on = false;
 }
 
-const body = { on: false, pts: null, hips: [new THREE.Vector3(), new THREE.Vector3()] };
+const body = { on: false, pts: null, Q: null, ok: null, filt: null, hips: [new THREE.Vector3(), new THREE.Vector3()] };
 const bR = new THREE.Vector3(), bU = new THREE.Vector3(), bD = new THREE.Vector3(), bS = new THREE.Vector3(), bH = new THREE.Vector3();
-function poseBody(lms) {
+const LIMB_TRUST = 0.6;                                     // below this the tracker is guessing: draw nothing
+function poseBody(lms, now) {
   const seen = i => (lms[i].visibility === undefined ? 1 : lms[i].visibility);
   if (seen(11) < 0.5 || seen(12) < 0.5) { body.on = false; return; }
-  if (!body.pts) body.pts = lms.map(() => new THREE.Vector3());
-  lms.forEach((q, i) => { v.set(q.x * W, (1 - q.y) * H, 0); body.on ? body.pts[i].lerp(v, 0.5) : body.pts[i].copy(v); });
+  if (!body.pts) {
+    body.pts = lms.map(() => new THREE.Vector3()); body.Q = lms.map(() => new THREE.Vector3());
+    body.filt = lms.map(() => new PointFilter(1.2, 0.006));
+  }
+  if (!body.on) body.filt.forEach(f => f.reset());
+  lms.forEach((q, i) => body.filt[i].apply(body.pts[i].set(q.x * W, (1 - q.y) * H, 0), now));
+  body.ok = lms.map((q, i) => seen(i) >= LIMB_TRUST && q.x > -0.02 && q.x < 1.02 && q.y > -0.02 && q.y < 1.02);
   const P = body.pts, f = BODY.frame;
   bR.subVectors(P[11], P[12]); bS.addVectors(P[11], P[12]).multiplyScalar(0.5);
-  if (seen(23) > 0.4 && seen(24) > 0.4) { body.hips[0].copy(P[23]); body.hips[1].copy(P[24]); }
-  else {                                                    // hips out of the picture: hang them under the shoulders
-    bU.set(-bR.y, bR.x, 0).multiplyScalar(f.h / f.w);
-    body.hips[0].copy(P[11]).sub(bU).addScaledVector(bR, -0.18); body.hips[1].copy(P[12]).sub(bU).addScaledVector(bR, 0.18);
-  }
+  // Use the hips only when they are really in the picture and the trunk they give is roughly upright
+  // against the shoulders; otherwise the tracker is guessing, so hang the hips straight under the shoulders.
+  bU.set(-bR.y, bR.x, 0).multiplyScalar(f.h / f.w);
+  bH.addVectors(P[23], P[24]).multiplyScalar(0.5); e1.subVectors(bS, bH);
+  const upright = e1.lengthSq() > 1 && e1.dot(bU) / (e1.length() * bU.length()) > 0.82;   // within about 35 degrees
+  if (body.ok[23] && body.ok[24] && upright) { body.hips[0].copy(P[23]); body.hips[1].copy(P[24]); }
+  else { body.hips[0].copy(P[11]).sub(bU).addScaledVector(bR, -0.18); body.hips[1].copy(P[12]).sub(bU).addScaledVector(bR, 0.18); }
   bH.addVectors(body.hips[0], body.hips[1]).multiplyScalar(0.5);
   bU.subVectors(bS, bH); bD.set(0, 0, Math.sqrt(bR.length() * bU.length()));
   bodyGroup.matrix.makeBasis(bR, bU, bD).setPosition(bH); bodyGroup.matrixWorldNeedsUpdate = true;
+  body.on = true;
+}
+// Runs every frame: arms, legs and neck, using the hand tracker's wrist when a hand is in view.
+function placeLimbs(handWrists) {
+  const P = body.pts, Q = body.Q, ok = body.ok.slice();
+  P.forEach((p, i) => Q[i].copy(p));
+  const reach = bR.length() * 1.5;
+  for (const hw of handWrists) {
+    const i = hw.distanceTo(P[15]) < hw.distanceTo(P[16]) ? 15 : 16;
+    if (hw.distanceTo(P[i]) < reach) { Q[i].copy(hw); ok[i] = true; }
+  }
   limbGroup.matrix.identity(); limbGroup.matrixWorldNeedsUpdate = true;
   for (const k in bodyMeshes) {
-    const m = bodyMeshes[k]; if (!m.limb) continue;
-    const [a, b] = m.limb; m.seen = seen(a) > 0.45 && seen(b) > 0.45;
+    const m = bodyMeshes[k];
+    if (m.neck) { placeNeck(m); continue; }
+    if (!m.limb) continue;
+    const [a, b] = m.limb; m.seen = ok[a] && ok[b];
     if (!m.seen) continue;
-    e1.subVectors(P[b], P[a]); const L = Math.max(e1.length(), 1e-6);
+    e1.subVectors(Q[b], Q[a]); const L = Math.max(e1.length(), 1e-6);
     e2.set(-e1.y, e1.x, 0); e3.set(0, 0, L);
-    m.mesh.matrix.makeBasis(e1, e2, e3).setPosition(P[a]); m.mesh.matrixWorldNeedsUpdate = true;
+    m.mesh.matrix.makeBasis(e1, e2, e3).setPosition(Q[a]); m.mesh.matrixWorldNeedsUpdate = true;
   }
-  body.on = true;
+}
+const nA = new THREE.Vector3(), nB = new THREE.Vector3(), nR = new THREE.Vector3(), nU = new THREE.Vector3();
+function placeNeck(m) {
+  nA.copy(m.neck[0]).applyMatrix4(bodyGroup.matrix).setZ(0);        // base of the neck on screen
+  nR.copy(m.neck[1]).applyMatrix4(bodyGroup.matrix).setZ(0);        // where the skull sits at rest
+  const rest = Math.max(nR.distanceTo(nA), 1e-6);
+  nB.copy(nR);
+  if (head.on && st.mode === "mirror") {                            // reach up to the base of the tracked skull
+    v.copy(SKULL_BASE).applyMatrix4(headM).applyMatrix4(cam.projectionMatrix);
+    v.set((v.x + 1) / 2 * W, (v.y + 1) / 2 * H, 0);
+    e1.subVectors(v, nA); nU.subVectors(nR, nA).normalize();
+    if (e1.dot(nU) > rest * 0.3 && e1.length() < rest * 3) nB.copy(v);
+  }
+  e1.subVectors(nB, nA); const L = Math.max(e1.length(), 1e-6);
+  e2.set(-e1.y, e1.x, 0).multiplyScalar(rest / L); e3.set(0, 0, rest);  // stretch in length only, keep the width
+  m.mesh.matrix.makeBasis(e1, e2, e3).setPosition(nA); m.mesh.matrixWorldNeedsUpdate = true;
+  m.seen = true; m.base = nA.clone(); m.end = nB.clone();
 }
 function orbitBody() {
   const f = BODY.frame;
@@ -213,18 +283,26 @@ function orbitBody() {
     .multiply(tmpM.makeTranslation(0, 0.25 * f.h, 0)).multiply(tmpM.makeScale(f.w, f.h, f.s));
   bodyGroup.matrixWorldNeedsUpdate = true;
   limbGroup.matrix.copy(bodyGroup.matrix); limbGroup.matrixWorldNeedsUpdate = true;
-  for (const k in bodyMeshes) { const m = bodyMeshes[k]; if (m.limb) { m.seen = true; m.mesh.matrix.copy(m.rest); m.mesh.matrixWorldNeedsUpdate = true; } }
+  for (const k in bodyMeshes) { const m = bodyMeshes[k]; if (m.limb || m.neck) { m.seen = true; m.mesh.matrix.copy(m.rest); m.mesh.matrixWorldNeedsUpdate = true; } }
   body.on = true;
 }
 function shadeBody(g) {                                     // darken the real body so the glow reads on any clothes
-  const P = body.pts, x = q => q.x, y = q => H - q.y, wide = bR.length();
+  const P = body.pts, Q = body.Q, x = q => q.x, y = q => H - q.y, wide = bR.length();
   g.lineJoin = g.lineCap = "round"; g.strokeStyle = g.fillStyle = "rgba(4,7,13,0.74)";
-  g.lineWidth = wide * 0.42; g.beginPath();
+  g.lineWidth = wide * 0.3; g.beginPath();
   [P[11], P[12], body.hips[1], body.hips[0]].forEach((q, k) => k ? g.lineTo(x(q), y(q)) : g.moveTo(x(q), y(q)));
   g.closePath(); g.fill(); g.stroke();
-  g.lineWidth = wide * 0.3; g.beginPath();
-  for (const k in bodyMeshes) { const m = bodyMeshes[k]; if (m.limb && m.seen) { g.moveTo(x(P[m.limb[0]]), y(P[m.limb[0]])); g.lineTo(x(P[m.limb[1]]), y(P[m.limb[1]])); } }
+  g.lineWidth = wide * 0.17; g.beginPath();                 // about the thickness of an arm
+  for (const k in bodyMeshes) {
+    const m = bodyMeshes[k];
+    if (m.limb && m.seen) { g.moveTo(x(Q[m.limb[0]]), y(Q[m.limb[0]])); g.lineTo(x(Q[m.limb[1]]), y(Q[m.limb[1]])); }
+  }
   g.stroke();
+  const nk = bodyMeshes.neck;                               // the neck, up to the chin
+  if (nk && nk.base && st.layers.skeleton) {
+    g.lineWidth = wide * 0.2; g.beginPath(); g.moveTo(x(nk.base), y(nk.base));
+    g.lineTo(x(nk.base) + (x(nk.end) - x(nk.base)) * 0.55, y(nk.base) + (y(nk.end) - y(nk.base)) * 0.55); g.stroke();
+  }
 }
 function bodyDots() {
   const camera = st.mode === "mirror" ? ortho : cam;
@@ -237,8 +315,9 @@ function bodyDots() {
     else for (const name of part.limb) { const m = bodyMeshes[name]; if (m && m.seen) { v.set(0.5, 0, 0).applyMatrix4(limbGroup.matrix.clone().multiply(m.mesh.matrix)); take(); } }
     if (!best) continue;
     best.applyMatrix4(camera.projectionMatrix);
-    const x = (best.x + 1) / 2 * W;
-    dots.push({ part, x: st.mode === "mirror" ? W - x : x, y: (1 - best.y) / 2 * H, front: st.mode === "mirror" || bestZ >= centreZ - 2 });
+    const x0 = (best.x + 1) / 2 * W, x = st.mode === "mirror" ? W - x0 : x0, y = (1 - best.y) / 2 * H;
+    if (st.mode === "mirror" && head.on && faceBox && x > faceBox[0] && x < faceBox[2] && y > faceBox[1] && y < faceBox[3]) continue;
+    dots.push({ part, x, y, front: st.mode === "mirror" || bestZ >= centreZ - 2 });
   }
 }
 
@@ -255,11 +334,12 @@ function applyStyle() {
     m.transparent = !st.solid; m.depthTest = m.depthWrite = st.solid; m.needsUpdate = true;
   });
   $("tStyle").textContent = st.solid ? "সলিড" : "এক্স-রে";
-  $("tNames").classList.toggle("on", st.names);
+  $("tNames").textContent = NAME_LABEL[st.names]; $("tNames").classList.toggle("on", st.names !== "off");
 }
 
 // ---------------------------------------------------------------- layout
 const video = $("video");
+const view = { x: 0, y: 0, w: 2, h: 2 };
 function layout() {
   if (!renderer) return;
   const r = $("stage").getBoundingClientRect();
@@ -269,6 +349,7 @@ function layout() {
     w = video.videoWidth * k; h = video.videoHeight * k; left = (r.width - w) / 2; top = (r.height - h) / 2;
   }
   W = Math.max(2, Math.round(w)); H = Math.max(2, Math.round(h));
+  view.x = -left; view.y = -top; view.w = r.width; view.h = r.height;   // the part of the picture on screen
   const L = $("layer"); L.style.width = W + "px"; L.style.height = H + "px"; L.style.left = left + "px"; L.style.top = top + "px";
   DPR = Math.min(window.devicePixelRatio || 1, 2);
   renderer.setPixelRatio(DPR); renderer.setSize(W, H, false);
@@ -343,10 +424,10 @@ function poseFromOrbit(t) {
 
 // ---------------------------------------------------------------- hands
 const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), e3 = new THREE.Vector3(), across = new THREE.Vector3(), hm = new THREE.Matrix4();
-function poseHand(rig, lms, flip) {
-  if (!rig.pts) rig.pts = lms.map(() => new THREE.Vector3());
-  const fresh = !rig.group.visible;
-  lms.forEach((p, i) => { v.set(p.x * W, (1 - p.y) * H, -p.z * W); fresh ? rig.pts[i].copy(v) : rig.pts[i].lerp(v, 0.65); });
+function poseHand(rig, lms, flip, now) {
+  if (!rig.pts) { rig.pts = lms.map(() => new THREE.Vector3()); rig.filt = lms.map(() => new PointFilter(1.5, 0.01)); }
+  if (!rig.group.visible) rig.filt.forEach(f => f.reset());
+  lms.forEach((p, i) => rig.filt[i].apply(rig.pts[i].set(p.x * W, (1 - p.y) * H, -p.z * W), now));
   const P = rig.pts, sign = flip ? 1 : -1;
   // The palm piece is stored in a frame of: wrist -> index knuckle, wrist -> little knuckle, palm normal.
   e1.subVectors(P[5], P[0]); e2.subVectors(P[17], P[0]);
@@ -405,8 +486,8 @@ function collectDots(handCount) {
       dots.push({ part, x: s.x, y: s.y, front: bestZ > centreZ });
     }
   }
-  if (st.mode === "mirror" && st.layers.hands) for (let h = 0; h < handCount; h++) {
-    const P = hands[h].pts; if (!P) continue;
+  if (st.mode === "mirror" && st.layers.hands) for (const rig of hands) {
+    const P = rig.pts; if (!P || !rig.group.visible) continue;
     const at = (a, b, k) => ({ x: W - (P[a].x + (P[b].x - P[a].x) * k), y: H - (P[a].y + (P[b].y - P[a].y) * k) });
     const spot = { carpals: at(0, 9, 0.12), metacarpals: at(0, 9, 0.62), phalanges: at(9, 10, 1) };
     for (const part of PARTS) if (part.hand) dots.push({ part, x: spot[part.hand].x, y: spot[part.hand].y, front: true });
@@ -421,16 +502,22 @@ function nearestDot(x, y, reach) {
 function drawHud(finger) {
   const g = $("hud").getContext("2d");
   g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
-  const q = st.quiz, showNames = st.names && !q;
+  const q = st.quiz, showNames = st.names !== "off" && !q;
+  const label = d => (st.names === "en" ? d.part.en : d.part.bn);
   g.font = '600 15px "Anek Bangla", sans-serif'; g.textBaseline = "middle"; g.lineCap = "round";
+  for (const d of dots) {
+    d.hot = st.selected === d.part.id ? "#ffb02e" : q && q.flash && q.flash.id === d.part.id ? q.flash.color : null;
+    d.named = false;
+  }
+  // Only the most useful names: the chosen part, then the layer just switched on, then what is near the middle.
+  const rank = d => (d.hot ? 0 : 1e7) + (d.part.layer === st.lastLayer ? 0 : 1e6) + Math.hypot(d.x - W / 2, d.y - H / 2);
+  dots.filter(d => d.hot || (showNames && d.front)).sort((a, b) => rank(a) - rank(b)).slice(0, MAX_NAMES).forEach(d => { d.named = true; });
   // Names on the same side are spread out so they never sit on top of each other.
   const lastY = { "1": -1e9, "-1": -1e9 };
   for (const d of [...dots].sort((a, b) => a.y - b.y)) {
-    d.hot = st.selected === d.part.id ? "#ffb02e" : q && q.flash && q.flash.id === d.part.id ? q.flash.color : null;
-    d.named = (showNames && d.front) || !!d.hot;
     if (!d.named) continue;
     d.dir = d.x > W / 2 ? 1 : -1;
-    const room = g.measureText(d.part.bn).width + 40;       // flip a name that would run off the screen
+    const room = g.measureText(label(d)).width + 40;        // flip a name that would run off the screen
     if (d.dir < 0 && d.x - room < 0) d.dir = 1; else if (d.dir > 0 && d.x + room > W) d.dir = -1;
     d.ly = Math.max(d.y, lastY[d.dir] + 21); lastY[d.dir] = d.ly;
   }
@@ -443,7 +530,7 @@ function drawHud(finger) {
     if (d.named) {                                          // name on a short leader line, pointing away from the middle
       const dir = d.dir, x0 = d.x + dir * (hot ? 11 : 8), x1 = d.x + dir * 28;
       g.beginPath(); g.moveTo(x0, d.y); g.lineTo(x1, d.ly); g.lineWidth = 1; g.strokeStyle = hot || "rgba(241,236,224,.7)"; g.stroke();
-      g.textAlign = dir > 0 ? "left" : "right"; g.fillStyle = hot || "#f1ece0"; g.fillText(d.part.bn, x1 + dir * 5, d.ly + 1);
+      g.textAlign = dir > 0 ? "left" : "right"; g.fillStyle = hot || "#f1ece0"; g.fillText(label(d), x1 + dir * 5, d.ly + 1);
     }
     g.shadowBlur = 0;
   }
@@ -452,11 +539,30 @@ function drawHud(finger) {
     g.beginPath(); g.arc(finger.x, finger.y, 18, 0, 6.3); g.strokeStyle = "rgba(241,236,224,.5)"; g.lineWidth = 1.5; g.stroke();
     if (finger.hold > 0) { g.beginPath(); g.arc(finger.x, finger.y, 18, -1.57, -1.57 + 6.283 * finger.hold); g.strokeStyle = "#ffb02e"; g.lineWidth = 4; g.stroke(); }
   }
+  if (DEBUG) {                                              // #debug: what the trackers see, for testing on a phone
+    const lines = debugLines();
+    g.font = '12px "JetBrains Mono", monospace'; g.textBaseline = "top";
+    const ox = view.x + 8, oy = view.y + 112;
+    g.fillStyle = "rgba(5,6,7,.85)"; g.fillRect(ox, oy, Math.min(view.w - 16, 330), lines.length * 16 + 10);
+    g.fillStyle = "#ffb02e"; lines.forEach((t, i) => g.fillText(t, ox + 6, oy + 5 + i * 16));
+  }
+}
+function debugLines() {
+  const c = i => (lastPose && lastPose[i] ? (lastPose[i].visibility ?? 0).toFixed(2) : " -  ");
+  return [`v ${VER || "dev"}  ${fps} fps  ${W}x${H}`,
+    `face ${trk.face || "-"}  hand ${trk.hand || "-"}  pose ${trk.pose || bodyState || "-"}`,
+    `found: head ${head.on ? "yes" : "no"}  hands ${seenHands.length}  body ${body.on ? "yes" : "no"}`,
+    `shoulder ${c(11)} ${c(12)}  elbow ${c(13)} ${c(14)}`,
+    `wrist ${c(15)} ${c(16)}  hip ${c(23)} ${c(24)}`,
+    "on: " + Object.keys(st.layers).filter(k => st.layers[k]).map(k => k.slice(0, 4)).join(" ")];
 }
 
 // ---------------------------------------------------------------- frame loop
 let faceTracker = null, handTracker = null, poseTracker = null, makeTracker = null, stream = null, lastVideoTime = -1, lostSince = 0, running = false;
-let seenHands = [], seenFlip = [], frameNo = 0, lastPose = null, bodyLost = 0, bodyState = "";
+let seenHands = [], seenFlip = [], frameNo = 0, lastPose = null, bodyLost = 0, bodyState = "", lastHandAt = -1e9, faceBox = null;
+let fps = 0, fpsN = 0, fpsT = 0;
+const trk = {};                                             // which processor each tracker runs on, for #debug
+function countFrame(now) { fpsN++; if (now - fpsT > 1000) { fps = Math.round(fpsN * 1000 / (now - fpsT)); fpsN = 0; fpsT = now; } }
 function hint(t) { if ($("hint").textContent !== t) $("hint").textContent = t; }
 
 function render() {
@@ -473,7 +579,9 @@ function render() {
   }
   headGroup.visible = head.on && showHead;
   headGroup.matrix.copy(headM); headGroup.matrixWorldNeedsUpdate = true;
-  renderer.clear(); renderer.render(headScene, cam);
+  renderer.clear();
+  if (st.mode === "mirror") { renderer.render(bodyScene, ortho); renderer.clearDepth(); }
+  renderer.render(headScene, cam);                          // the head is drawn over the body, never under it
   renderer.clearDepth(); renderer.render(handScene, ortho);
 }
 
@@ -483,12 +591,14 @@ function tick(now) {
   let finger = null;
   if (st.mode === "mirror") {
     if (video.readyState < 2 || video.currentTime === lastVideoTime || !faceTracker) return;
-    lastVideoTime = video.currentTime; frameNo++;
+    lastVideoTime = video.currentTime; frameNo++; countFrame(now);
     const L = st.layers;
     const wantFace = L.skull || L.brain || L.muscles || L.eyes;
     const wantHands = handTracker && (L.hands || st.quiz);
     const wantBody = poseTracker && BODY && (L.skeleton || L.chest || L.digest || L.excretory);
-    const turn = wantHands && wantBody ? frameNo % 2 : -1;  // the two heavier trackers take turns on cheap phones
+    const handRecent = now - lastHandAt < 500;              // a hand in view gets every frame, the body every third
+    const runHands = wantHands && (!wantBody || handRecent || frameNo % 3 === 0);
+    const runBody = wantBody && (!wantHands || !handRecent || frameNo % 3 === 0);
     try {
       if (wantFace) {
         const fr = faceTracker.detectForVideo(video, now);
@@ -497,23 +607,31 @@ function tick(now) {
           let jaw = 0; const bs = fr.faceBlendshapes && fr.faceBlendshapes[0];
           if (bs) for (const c of bs.categories) if (c.categoryName === "jawOpen") jaw = c.score;
           poseFromFace(mat.data, lms, jaw); lostSince = 0;
+          let x0 = 1, y0 = 1, x1 = 0, y1 = 0;                // the face on screen; body names stay out of it
+          for (const k of lms) { if (k.x < x0) x0 = k.x; if (k.x > x1) x1 = k.x; if (k.y < y0) y0 = k.y; if (k.y > y1) y1 = k.y; }
+          const mx = (x1 - x0) * 0.15, my = (y1 - y0) * 0.15;
+          faceBox = [W - (x1 + mx) * W, (y0 - my) * H, W - (x0 - mx) * W, (y1 + my) * H];
         } else { if (!lostSince) lostSince = now; if (now - lostSince > 300) head.on = false; }
       } else head.on = false;
-      if (wantHands && turn !== 1) {
+      if (runHands) {
         const hr = handTracker.detectForVideo(video, now);
         seenHands = hr.landmarks || [];
         const names = hr.handedness || hr.handednesses || [];
         seenFlip = seenHands.map((_, i) => !!(names[i] && names[i][0] && names[i][0].categoryName === "Left"));
+        if (seenHands.length) lastHandAt = now;
       } else if (!wantHands) seenHands = [];
-      if (wantBody && turn !== 0) {                         // the body is found on its own; no face needed
+      if (runBody) {                                        // the body is found on its own; no face needed
         const pr = poseTracker.detectForVideo(video, now);
         lastPose = pr.landmarks && pr.landmarks[0] || null;
-        if (lastPose) { poseBody(lastPose); if (body.on) bodyLost = 0; }
+        if (lastPose) { poseBody(lastPose, now); if (body.on) bodyLost = 0; }
         if (!lastPose || !body.on) { if (!bodyLost) bodyLost = now; body.on = body.on && now - bodyLost < 400; }
       } else if (!wantBody) { body.on = false; lastPose = null; }
     } catch (err) { hint("ট্র্যাকারে সমস্যা: " + err.message); return; }
     const showHands = L.hands ? seenHands : [];
-    hands.forEach((rig, i) => { if (showHands[i]) poseHand(rig, showHands[i], seenFlip[i]); else rig.group.visible = false; });
+    const rigFor = [null, null];                            // keep each hand on its own rig so smoothing never mixes them
+    showHands.forEach((h, i) => { let r = seenFlip[i] ? 0 : 1; if (rigFor[r]) r = 1 - r; if (!rigFor[r]) rigFor[r] = [h, seenFlip[i]]; });
+    hands.forEach((rig, r) => { if (rigFor[r]) poseHand(rig, rigFor[r][0], rigFor[r][1], now); else rig.group.visible = false; });
+    if (body.on) placeLimbs(seenHands.map(h => new THREE.Vector3(h[0].x * W, (1 - h[0].y) * H, 0)));
     const g = $("shade").getContext("2d"); g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
     if (!st.solid) { if (body.on) shadeBody(g); if (showHands.length) shadeHands(g, showHands); }
     hint(bodyState === "loading" && !head.on ? "শরীরের মডেল লোড হচ্ছে…"
@@ -546,15 +664,17 @@ async function loadTrackers() {
   makeTracker = make(vision.PoseLandmarker, POSE_MODEL, { numPoses: 1 });
   const face = make(vision.FaceLandmarker, FACE_MODEL, { numFaces: 1, outputFacialTransformationMatrixes: true, outputFaceBlendshapes: true });
   const hand = make(vision.HandLandmarker, HAND_MODEL, { numHands: 2 });
-  try { faceTracker = await face("GPU"); } catch (e) { faceTracker = await face("CPU"); }
-  try { handTracker = await hand("GPU"); } catch (e) { try { handTracker = await hand("CPU"); } catch (e2) { handTracker = null; } }
+  try { faceTracker = await face("GPU"); trk.face = "GPU"; } catch (e) { faceTracker = await face("CPU"); trk.face = "CPU"; }
+  try { handTracker = await hand("GPU"); trk.hand = "GPU"; }
+  catch (e) { try { handTracker = await hand("CPU"); trk.hand = "CPU"; } catch (e2) { handTracker = null; trk.hand = "failed"; } }
 }
 async function loadPose() {
   if (poseTracker) return;
   await loadTrackers();
-  try { poseTracker = await makeTracker("GPU"); } catch (e) { poseTracker = await makeTracker("CPU"); }
+  try { poseTracker = await makeTracker("GPU"); trk.pose = "GPU"; } catch (e) { poseTracker = await makeTracker("CPU"); trk.pose = "CPU"; }
 }
-async function fakeCamera(url) {                             // test hook: #test=<image address> stands in for the camera
+async function fakeCamera(url) {                             // test hook: #test=<photo in this site> stands in for the camera
+  if (!/^[\w\-/.]+$/.test(url) || url.includes("..")) throw new Error("test photo must be a path inside this site");
   const img = new Image(); img.crossOrigin = "anonymous"; img.src = url; await img.decode();
   const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight;
   const g = c.getContext("2d"); g.drawImage(img, 0, 0); setInterval(() => g.drawImage(img, 0, 0), 66);
@@ -601,9 +721,10 @@ async function enter(mode) {
   } catch (err) {
     stopCamera();
     const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
-    status(denied ? "ক্যামেরার অনুমতি পাওয়া যায়নি। অনুমতি দিয়ে আবার চেষ্টা করো, অথবা ক্যামেরা ছাড়া দেখো।"
-                  : step + " চালু করা যায়নি: " + (err && err.message ? err.message : err), true);
-    if (!$("ui").hidden) hint("ক্যামেরা চালু হয়নি");
+    const msg = denied ? "ক্যামেরার অনুমতি পাওয়া যায়নি। অনুমতি দিয়ে আবার চেষ্টা করো, অথবা ক্যামেরা ছাড়া দেখো।"
+                       : step + " চালু করা যায়নি: " + (err && err.message ? err.message : err);
+    status(msg, true);
+    if (!$("ui").hidden) hint(msg);
   } finally { buttons.forEach(b => b.disabled = false); }
 }
 function goHome() {
@@ -618,16 +739,29 @@ function idle() {                                           // the turning model
 }
 
 // ---------------------------------------------------------------- controls
+const GROUPS = { head: "মাথা", body: "শরীর" };
 function buildChips() {
-  $("layerChips").innerHTML = Object.entries(CONTENT.layers).filter(([, L]) => st.mode === "mirror" || (L.subject || "head") === st.subject).map(([k, L]) =>
-    `<button class="chip" data-layer="${k}"><i style="background:${L.color}"></i>${esc(L.bn)}</button>`).join("");
-  for (const b of $("layerChips").children) b.onclick = () => { st.layers[b.dataset.layer] = !st.layers[b.dataset.layer]; syncChips(); };
+  const groups = st.mode === "mirror" ? ["head", "body"] : [st.subject];
+  const rows = groups.map(gr => `<div class="lrow"><span class="lname">${GROUPS[gr]}</span>` +
+    Object.entries(CONTENT.layers).filter(([, L]) => (L.subject || "head") === gr).map(([k, L]) =>
+      `<button class="chip" data-layer="${k}" aria-pressed="false"><i style="background:${L.color}"></i>${esc(L.short || L.bn)}</button>`).join(""));
+  rows[0] += `<button class="chip all" data-all="1">সব</button>`;
+  $("layerChips").innerHTML = rows.map(r => r + "</div>").join("");
+  for (const b of $("layerChips").querySelectorAll("[data-layer]")) b.onclick = () => {
+    const k = b.dataset.layer; st.layers[k] = !st.layers[k];
+    if (st.layers[k]) st.lastLayer = k;
+    store.set("layers", st.layers); syncChips();
+  };
+  $("layerChips").querySelector("[data-all]").onclick = () => {
+    for (const b of $("layerChips").querySelectorAll("[data-layer]")) if (!b.disabled) st.layers[b.dataset.layer] = true;
+    store.set("layers", st.layers); syncChips();
+  };
 }
 function syncChips() {
-  for (const b of $("layerChips").children) {
+  for (const b of $("layerChips").querySelectorAll("[data-layer]")) {
     const k = b.dataset.layer;
-    b.classList.toggle("on", !!st.layers[k]);
     b.disabled = k === "hands" && (st.mode !== "mirror" || !handTracker);
+    b.classList.toggle("on", !!st.layers[k] && !b.disabled); b.setAttribute("aria-pressed", String(!!st.layers[k]));
   }
 }
 $("goMirror").onclick = () => enter("mirror");
@@ -638,7 +772,7 @@ for (const b of $("subjectSeg").children) b.onclick = () => {
   endQuiz(true); closeCard(); st.subject = b.dataset.subject; orbit.spin = true; enter(st.mode);
 };
 for (const b of $("modeSeg").children) b.onclick = () => { if (b.dataset.mode !== st.mode) { endQuiz(true); enter(b.dataset.mode); } };
-$("tNames").onclick = () => { st.names = !st.names; applyStyle(); };
+$("tNames").onclick = () => { st.names = { bn: "en", en: "off", off: "bn" }[st.names]; store.set("names", st.names); applyStyle(); };
 $("tStyle").onclick = () => { st.solid = !st.solid; applyStyle(); };
 $("tQuiz").onclick = startQuiz;
 $("tShot").onclick = snapshot;

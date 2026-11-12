@@ -117,9 +117,23 @@ def torso(p):
 
 
 SPINE = set(files_of["vertebral column"])
+# The neck is its own piece so it can stretch up to the tracked head instead of running over the face.
+NECK = {"FJ3176", "FJ3177", "FJ3161", "FJ3164", "FJ3167", "FJ3170", "FJ3172",              # atlas, axis, C3-C7
+        "FJ3202", "FJ3213", "FJ3218", "FJ3219", "FJ3220", "FJ3221"}                         # their disks
+assert NECK <= SPINE, "neck file ids changed"
+Y_CUT = (1377.0 - H[2]) / h                                             # top of the first thoracic vertebra (mm -> torso frame)
+
+
+def clip(V, F, ymax):
+    """Keep the faces that lie at or below ymax (torso frame) and drop unused vertices."""
+    F = F[(V[F][:, :, 1] <= ymax).all(axis=1)]
+    used = np.unique(F); remap = -np.ones(len(V), dtype=np.int64); remap[used] = np.arange(len(used))
+    return V[used], remap[F]
+
+
 TORSO = [  # name, layer, parts, target vertices, parts to leave out
     ("ribs", "skeleton", ["rib cage", "sternum"], 12000, SPINE),
-    ("spine", "skeleton", ["vertebral column"], 9000, ()),
+    ("spine", "skeleton", ["vertebral column"], 7500, NECK),
     ("pelvis", "skeleton", ["bony pelvis"], 5000, SPINE),
     ("girdle", "skeleton", ["right clavicle", "left clavicle", "right scapula", "left scapula"], 3500, ()),
     ("heart", "chest", ["heart"], 5000, ()),
@@ -160,9 +174,34 @@ def pack(name, layer, V, F, extra=None):
     print("%-10s %6d verts %7d tris" % (name, len(V), len(F)))
 
 
+CLIPPED = {"trachea", "stomach"}                                       # windpipe and gullet stop at the neck
 for name, layer, parts, target, skip in TORSO:
     V, F = simplify(*merge(parts, skip), target)
-    pack(name, layer, torso(V), F)
+    V = torso(V)
+    if name in CLIPPED:
+        V, F = clip(V, F, Y_CUT)
+    pack(name, layer, V, F)
+
+# ---- neck: cervical vertebrae, stored like a limb from the base of the neck (0) to the skull (1)
+Vn, Fn = [], []
+off = 0
+for f in dict.fromkeys(files_of["vertebral column"]):
+    if f not in NECK:
+        continue
+    v_, f_ = load(f); Vn.append(v_); Fn.append(f_ + off); off += len(v_)
+V, F = np.vstack(Vn), np.vstack(Fn)
+z = V[:, 2]
+up = V[z < z.min() + 0.05 * np.ptp(z)].mean(0)                         # base of the neck (bottom of C7)
+low = V[z > z.max() - 0.05 * np.ptp(z)].mean(0)                        # top of the atlas, under the skull
+a = low - up; L = np.linalg.norm(a); ah = a / L
+side = np.array([sx, 0.0, 0.0]); b = side - (side @ ah) * ah; b /= np.linalg.norm(b)
+c = np.cross(ah, b)
+V, F = simplify(V, F, 2600)
+local = np.stack([(V - up) @ ah, (V - up) @ b, (V - up) @ c], axis=1) / L
+cols = [torso_vec(a)[0], torso_vec(b * L)[0], torso_vec(c * L)[0], torso(up)[0]]
+pack("neck", "skeleton", local, F, {"neck": [round(float(x), 5) for x in torso(up)[0]],
+                                    "neckTop": [round(float(x), 5) for x in torso(low)[0]],
+                                    "rest": [round(float(x), 5) for col in cols for x in col]})
 
 for name, parts, ja, jb, target in LIMBS:
     V, F = merge(parts)
@@ -181,8 +220,11 @@ for name, parts, ja, jb, target in LIMBS:
     pack(name, "skeleton", local, F, {"limb": [ja, jb], "rest": rest})
 
 
-def centre(parts, skip=()):
-    return [round(float(x), 4) for x in torso(merge(parts, skip)[0].mean(0))[0]]
+def centre(parts, skip=(), ymax=None):
+    T = torso(merge(parts, skip)[0])
+    if ymax is not None:
+        T = T[T[:, 1] <= ymax]
+    return [round(float(x), 4) for x in T.mean(0)]
 
 
 ribsT = torso(merge(["rib cage"], SPINE)[0])
@@ -197,8 +239,8 @@ anchors = {
     "scapula": [centre(["left scapula"]), centre(["right scapula"])],
     "heart": [centre(["heart"])],
     "lungs": [centre(["left lung"]), centre(["right lung"])],
-    "trachea": [centre(["trachea"])],
-    "esophagus": [centre(["esophagus"])],
+    "trachea": [centre(["trachea"], ymax=Y_CUT)],
+    "esophagus": [centre(["esophagus"], ymax=Y_CUT)],
     "stomach": [centre(["stomach"])],
     "liver": [centre(["liver"])],
     "pancreas": [centre(["pancreas"])],
