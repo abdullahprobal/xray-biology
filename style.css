@@ -164,3 +164,11 @@ h2 { margin: 0 0 18px; font: 700 26px/1.25 var(--display); }
 .read .draft { border-left: 2px solid var(--lamp); padding: 8px 12px; color: var(--dim); font-size: 14px; margin-top: 32px; }
 
 .quizad { min-height: 250px; margin-top: 20px; }
+
+/* ---------- main call to action: the one amber button ---------- */
+.btn.cta { display: inline-flex; align-items: center; gap: 10px; background: var(--lamp); color: #1a1205; font-size: 20px; font-weight: 800;
+  padding: 18px 30px; border: 0; position: relative; box-shadow: 0 0 0 0 rgba(255,176,46,.55); animation: ctaPulse 2.4s ease-out infinite; }
+.btn.cta:hover { background: #ffc04f; }
+.btn.cta:active { transform: scale(.97); background: #ffc04f; }
+@keyframes ctaPulse { 0% { box-shadow: 0 0 0 0 rgba(255,176,46,.55); } 70% { box-shadow: 0 0 0 16px rgba(255,176,46,0); } 100% { box-shadow: 0 0 0 0 rgba(255,176,46,0); } }
+@media (prefers-reduced-motion: reduce) { .btn.cta { animation: none; } }
