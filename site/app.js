@@ -57,10 +57,12 @@ class PointFilter {
 
 // ---------------------------------------------------------------- state
 // "আমি ↔ হাড়" slider: how dark the shadow over the real person is. Bones always stay at full brightness.
-const SEE = see => 0.45 + 0.47 * see;
+const SEE = see => 0.1 + 0.8 * see;
+const LENS_SOFT = 0.55;                                      // the lens is fully clear up to this share of its radius, then fades out
 const SHADOW = "#04070d", FEATHER = 0.15;
 const st = {
-  see: store.get("see2", 0.9),
+  see: store.get("see3", 0.375),   // the real person stays clearly visible
+  lens: store.get("lens", true),   // X-ray lens: anatomy shows only inside a round window that follows the fingertip
   mode: null,                      // "mirror" | "explore"
   subject: "head",                 // "head" (face + hands) | "body" (everything below the neck)
   layers: { skull: true, brain: false, muscles: false, eyes: true, hands: true,
@@ -124,12 +126,13 @@ void main() {
 }`;
 
 function material(glow, solid, gain, mode) {
-  return new THREE.ShaderMaterial({
+  const m = new THREE.ShaderMaterial({
     vertexShader: VERT, fragmentShader: FRAG, side: THREE.DoubleSide, transparent: true, depthTest: false, depthWrite: false,
     blending: mode === 2 ? THREE.NormalBlending : THREE.AdditiveBlending,
     uniforms: { uGlow: { value: new THREE.Color(glow) }, uSolid: { value: new THREE.Color(solid) }, uMode: { value: mode || 0 },
                 uGain: { value: gain }, uAlpha: { value: 1 }, uFlatView: { value: 0 }, uFeather: { value: 0 }, uFade: { value: 0 } },
   });
+  m.userData.gain = gain; return m;
 }
 
 function unpack(list, bin) {
@@ -304,33 +307,7 @@ function orbitBody() {
   for (const k in bodyMeshes) { const m = bodyMeshes[k]; if (m.limb || m.neck) { m.seen = true; m.mesh.matrix.copy(m.rest); m.mesh.matrixWorldNeedsUpdate = true; } }
   body.on = true;
 }
-// The pose tracker can also say which pixels are the person. That outline is the "shadow person" behind the bones.
-let maskOn = false, maskAt = -1e9, maskCv = null, maskImg = null, maskCost = 0, maskN = 0;
-function keepMask(m, now) {
-  if (!m) return;
-  const w = m.width, h = m.height, step = Math.ceil(w / 320), mw = Math.floor(w / step), mh = Math.floor(h / step);
-  const t0 = performance.now(), f = m.getAsFloat32Array();
-  if (!maskCv) maskCv = document.createElement("canvas");
-  if (maskCv.width !== mw || maskCv.height !== mh) {
-    maskCv.width = mw; maskCv.height = mh; maskImg = maskCv.getContext("2d").createImageData(mw, mh);
-    for (let i = 0; i < mw * mh; i++) { maskImg.data[i * 4] = 4; maskImg.data[i * 4 + 1] = 7; maskImg.data[i * 4 + 2] = 13; }
-  }
-  const d = maskImg.data;
-  for (let yy = 0, i = 3; yy < mh; yy++) for (let xx = 0, k = yy * step * w; xx < mw; xx++, k += step, i += 4) d[i] = f[k] * 255;
-  maskCv.getContext("2d").putImageData(maskImg, 0, 0); maskAt = now;
-  maskCost += (performance.now() - t0 - maskCost) * 0.1;
-  if (DEBUG) window.xrMask = maskCv;
-}
-let poseCv = null;
-function poseFrame() {                                      // a small copy of the camera picture: the tracker shrinks it anyway, and a small outline is quick to read back
-  if (!maskOn) return video;
-  const c = poseCv || (poseCv = document.createElement("canvas")), w = 320, h = Math.round(320 * video.videoHeight / video.videoWidth) || 240;
-  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
-  c.getContext("2d").drawImage(video, 0, 0, w, h);
-  return c;
-}
-function dropMask() { maskOn = false; trk.mask = "off (slow)"; try { poseTracker.setOptions({ outputSegmentationMasks: false }); } catch (e) {} }
-function shadeBody(g) {                                     // rough shadow of the body, used when the tracker gives no outline
+function shadeBody(g) {                                     // light shadow behind the trunk and limbs so the glow reads on any clothes
   const P = body.pts, Q = body.Q, x = q => q.x, y = q => H - q.y, wide = bR.length();
   g.lineJoin = g.lineCap = "round"; g.strokeStyle = g.fillStyle = SHADOW;
   g.lineWidth = wide * 0.34; g.beginPath();
@@ -549,7 +526,7 @@ function drawHud(finger) {
   g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
   const q = st.quiz, showNames = st.names !== "off" && !q;
   const label = d => (st.names === "en" ? d.part.en : d.part.bn);
-  g.font = '700 16px "Anek Bangla", sans-serif'; g.textBaseline = "middle"; g.lineCap = "round";
+  g.font = '600 14px "Anek Bangla", sans-serif'; g.textBaseline = "middle"; g.lineCap = g.lineJoin = "round";
   for (const d of dots) {
     d.hot = st.selected === d.part.id ? "#ffb02e" : q && q.flash && q.flash.id === d.part.id ? q.flash.color : null;
     d.named = false;
@@ -557,33 +534,47 @@ function drawHud(finger) {
   // Only the most useful names: the chosen part, then the layer just switched on, then what is near the middle.
   const rank = d => (d.hot ? 0 : 1e7) + (d.part.layer === st.lastLayer ? 0 : 1e6) + Math.hypot(d.x - W / 2, d.y - H / 2);
   dots.filter(d => d.hot || (showNames && d.front)).sort((a, b) => rank(a) - rank(b)).slice(0, MAX_NAMES).forEach(d => { d.named = true; });
-  // Names on the same side are spread out so they never sit on top of each other.
-  const lastY = { "1": -1e9, "-1": -1e9 };
-  for (const d of [...dots].sort((a, b) => a.y - b.y)) {
+  // Names stand in two columns beside the subject, joined to their dots by thin lines, like the markers on a film.
+  hudNo++;
+  let lo = 1e9, hi = -1e9; for (const d of dots) { if (d.x < lo) lo = d.x; if (d.x > hi) hi = d.x; }
+  const mid = (lo + hi) / 2, slack = Math.max(12, (hi - lo) * 0.08), edgeL = view.x + 8, edgeR = view.x + view.w - 8;
+  const cols = { "-1": [], "1": [] };
+  for (const d of dots) {
     if (!d.named) continue;
-    d.dir = d.x > W / 2 ? 1 : -1;
-    const room = g.measureText(label(d)).width + 40;        // flip a name that would run off the screen
-    if (d.dir < 0 && d.x - room < 0) d.dir = 1; else if (d.dir > 0 && d.x + room > W) d.dir = -1;
-    d.ly = Math.max(d.y, lastY[d.dir] + 27); lastY[d.dir] = d.ly;
+    const s = nameAt[d.part.id] || (nameAt[d.part.id] = { side: 1, y: d.y, seen: -9 });
+    if (hudNo - s.seen > 3) { s.side = d.x < mid ? -1 : 1; s.y = d.y; }                    // new on screen: start at its dot
+    else {                                                                                 // a name keeps its side and glides, so nothing flickers
+      if (s.side < 0 && d.x > mid + slack) s.side = 1; else if (s.side > 0 && d.x < mid - slack) s.side = -1;
+      s.y += (d.y - s.y) * 0.5;
+    }
+    s.seen = hudNo; d.dir = s.side; d.ly = s.y; cols[s.side].push(d);
+  }
+  for (const side of [-1, 1]) {
+    const list = cols[side].sort((a, b) => a.ly - b.ly); let prev = -1e9;
+    for (const d of list) { d.ly = Math.max(d.ly, prev + 22); prev = d.ly; }
+    const over = prev - (view.y + view.h - 14); if (over > 0) for (const d of list) d.ly -= over;
+    for (const d of list) {                                 // tx = the end of the name nearest the subject; names never leave the screen
+      const tw = g.measureText(label(d)).width;
+      d.tx = side < 0 ? Math.max(edgeL + tw, lo - 24) : Math.min(edgeR - tw, hi + 24);
+    }
   }
   for (const d of dots) {
-    const col = CONTENT.layers[d.part.layer].color, hot = d.hot;
-    g.globalAlpha = d.front || hot ? 1 : 0.4;
-    g.shadowColor = "rgba(0,0,0,.9)"; g.shadowBlur = 6;
-    g.beginPath(); g.arc(d.x, d.y, hot ? 9 : 5.5, 0, 6.3); g.lineWidth = hot ? 2.5 : 1.5; g.strokeStyle = hot || "#f1ece0"; g.stroke();
-    g.beginPath(); g.arc(d.x, d.y, 2.2, 0, 6.3); g.fillStyle = hot || col; g.fill();
-    if (d.named) {                                          // name on a short leader line, pointing away from the middle
-      const dir = d.dir, x0 = d.x + dir * (hot ? 11 : 8), x1 = d.x + dir * 28;
-      g.beginPath(); g.moveTo(x0, d.y); g.lineTo(x1, d.ly); g.lineWidth = 1; g.strokeStyle = hot || "rgba(241,236,224,.7)"; g.stroke();
-      // dark plate behind the name so it stays readable over any camera background
-      const t = label(d), tw = g.measureText(t).width, tx = x1 + dir * 5, px = dir > 0 ? tx - 5 : tx - tw - 5;
-      g.shadowBlur = 0; g.fillStyle = "rgba(5,6,7,.78)";
-      g.beginPath(); g.roundRect ? g.roundRect(px, d.ly - 12, tw + 10, 24, 4) : g.rect(px, d.ly - 12, tw + 10, 24); g.fill();
-      g.textAlign = dir > 0 ? "left" : "right"; g.fillStyle = hot || "#fff"; g.fillText(t, tx, d.ly + 1);
-    }
+    const col = CONTENT.layers[d.part.layer].color, hot = d.hot, a = d.front || hot ? 1 : 0.4;
+    g.globalAlpha = a; g.shadowColor = "rgba(0,0,0,.8)"; g.shadowBlur = 4;
+    g.beginPath(); g.arc(d.x, d.y, hot ? 9 : 6, 0, 6.3); g.lineWidth = hot ? 2.5 : 1; g.strokeStyle = hot || "rgba(241,236,224,.6)"; g.stroke();
+    g.beginPath(); g.arc(d.x, d.y, 2.6, 0, 6.3); g.fillStyle = hot || col; g.fill();
     g.shadowBlur = 0;
+    if (d.named) {
+      const t = label(d);
+      g.globalAlpha = 0.75; g.beginPath(); g.moveTo(d.x + d.dir * (hot ? 10 : 7), d.y); g.lineTo(d.tx - d.dir * 5, d.ly);
+      g.lineWidth = 1; g.strokeStyle = hot || col; g.stroke();
+      g.globalAlpha = 1; g.textAlign = d.dir < 0 ? "right" : "left";
+      g.lineWidth = 3.5; g.strokeStyle = "rgba(4,7,13,.9)"; g.strokeText(t, d.tx, d.ly + 1);   // dark outline keeps the name readable on any background
+      g.fillStyle = hot || "#fff"; g.fillText(t, d.tx, d.ly + 1);
+    }
   }
   g.globalAlpha = 1; g.textAlign = "left";
+  if (lens) { g.beginPath(); g.arc(lens.x, lens.y, lens.r, 0, 6.3); g.strokeStyle = "rgba(127,209,255,.75)"; g.lineWidth = 1.5; g.stroke(); }
   if (finger) {                                             // pointing ring for the quiz
     g.beginPath(); g.arc(finger.x, finger.y, 18, 0, 6.3); g.strokeStyle = "rgba(241,236,224,.5)"; g.lineWidth = 1.5; g.stroke();
     if (finger.hold > 0) { g.beginPath(); g.arc(finger.x, finger.y, 18, -1.57, -1.57 + 6.283 * finger.hold); g.strokeStyle = "#ffb02e"; g.lineWidth = 4; g.stroke(); }
@@ -603,7 +594,6 @@ function debugLines() {
     `found: head ${head.on ? "yes" : "no"}  hands ${seenHands.length}  body ${body.on ? "yes" : "no"}`,
     `shoulder ${c(11)} ${c(12)}  elbow ${c(13)} ${c(14)}`,
     `wrist ${c(15)} ${c(16)}  hip ${c(23)} ${c(24)}`,
-    `outline ${trk.mask || "-"}  ${maskCost.toFixed(1)} ms`,
     "on: " + Object.keys(st.layers).filter(k => st.layers[k]).map(k => k.slice(0, 4)).join(" ")];
 }
 
@@ -612,14 +602,29 @@ let faceTracker = null, handTracker = null, poseTracker = null, makeTracker = nu
 let seenHands = [], seenFlip = [], frameNo = 0, lastPose = null, bodyLost = 0, bodyState = "", lastHandAt = -1e9, faceBox = null;
 let fps = 0, fpsN = 0, fpsT = 0;
 const trk = {};                                             // which processor each tracker runs on, for #debug
-function countFrame(now) {
-  fpsN++; if (now - fpsT <= 1000) return;
-  fps = Math.round(fpsN * 1000 / (now - fpsT)); fpsN = 0; fpsT = now;
-  // five slow seconds in a row with the person outline on: too heavy for this phone, use the rough shadow instead (#mask keeps it on)
-  maskN = maskOn && now - maskAt < 1500 && fps < 10 && !want.has("mask") ? maskN + 1 : 0;
-  if (maskN >= 5) dropMask();
+function countFrame(now) { fpsN++; if (now - fpsT > 1000) { fps = Math.round(fpsN * 1000 / (now - fpsT)); fpsN = 0; fpsT = now; } }
+let wowDone = false, hudNo = 0;
+const nameAt = {};                                          // part id -> { side, y, seen }: where its name stood last frame
+
+// X-ray lens: the anatomy shows only inside a round window. It follows the index fingertip, or a finger on the screen.
+let lens = null, lensTouch = null, lensUsed = false, lensMask = "", nose = null;
+const lensOn = () => st.lens && st.mode === "mirror" && !st.quiz;
+const touching = now => lensTouch && now - lensTouch.t < 4000;
+function aimLens(now) {
+  if (!lensOn()) { lens = null; return; }
+  const r = Math.min(view.w, view.h) * 0.3; let x, y;
+  if (seenHands[0]) { x = W - seenHands[0][8].x * W; y = seenHands[0][8].y * H; lensUsed = true; }
+  else if (touching(now)) { x = lensTouch.x; y = lensTouch.y; }
+  else if (head.on && nose) { x = W - nose.x * W; y = nose.y * H; }
+  else if (body.on) { x = W - (body.pts[11].x + body.pts[12].x) / 2; y = H - (body.pts[11].y + body.pts[12].y + body.hips[0].y + body.hips[1].y) / 4; }
+  else { x = view.x + view.w / 2; y = view.y + view.h * 0.4; }
+  if (lens) { lens.x += (x - lens.x) * 0.5; lens.y += (y - lens.y) * 0.5; lens.r = r; } else lens = { x, y, r };
 }
-let wowDone = false, maskLive = false;
+function maskLayers() {                                     // the 3D and shadow layers are mirrored by CSS, so the window is placed in their own unmirrored space
+  const m = lens ? `radial-gradient(circle ${lens.r.toFixed(1)}px at ${(W - lens.x).toFixed(1)}px ${lens.y.toFixed(1)}px, #000 ${LENS_SOFT * 100}%, transparent 100%)` : "none";
+  if (m === lensMask) return; lensMask = m;
+  for (const id of ["gl", "shade"]) { const s = $(id).style; s.maskImage = m; s.webkitMaskImage = m; }
+}
 function xrayWow() {                                         // one scan sweep, a soft "zap" and a short buzz
   if (st.mode !== "mirror") return;
   const el = document.createElement("div"); el.className = "scan"; $("stage").appendChild(el);
@@ -644,12 +649,15 @@ function render() {
                    : m.layer === "outline" ? !st.solid : !!st.layers[m.layer];
   }
   const glow = mirror && !st.solid, dark = SEE(st.see), L = st.layers;
-  // when the person outline already darkens the face, the head veil only adds what is missing
-  meshes.veil.mesh.material.uniforms.uAlpha.value = maskLive ? 1 - (1 - dark) / (1 - dark * 0.92) : dark;
+  meshes.veil.mesh.material.uniforms.uAlpha.value = dark;
   // glowing light adds up, so with several head layers on each one gets a smaller share
   const share = 1 / (0.4 + 0.6 * Math.max(1, (L.skull ? 1 : 0) + (L.brain ? 1 : 0) + (L.muscles ? 1 : 0)));
-  for (const k in meshes) if (k !== "veil") meshes[k].mesh.material.uniforms.uGain.value = meshes[k].gain * (glow && k !== "outline" ? share : 1);
-  allMaterials(m => { m.uniforms.uFeather.value = glow ? FEATHER : 0; });
+  allMaterials((m, info) => {
+    m.uniforms.uFeather.value = glow ? FEATHER : 0;
+    if (info.layer === "veil") return;
+    // over the real, bright picture a full-strength glow burns out to white and hides the face, so it is turned down
+    m.uniforms.uGain.value = m.userData.gain * (glow ? 0.75 : 1) * (glow && info.layer && info.layer !== "outline" ? share : 1);
+  });
   if (BODY) {
     bodyGroup.visible = limbGroup.visible = showBody && body.on;
     for (const k in bodyMeshes) { const m = bodyMeshes[k]; m.mesh.visible = !!st.layers[m.layer] && (!m.limb || m.seen); }
@@ -671,7 +679,7 @@ function tick(now) {
     lastVideoTime = video.currentTime; frameNo++; countFrame(now);
     const L = st.layers;
     const wantFace = L.skull || L.brain || L.muscles || L.eyes;
-    const wantHands = handTracker && (L.hands || st.quiz);
+    const wantHands = handTracker && (L.hands || st.quiz || st.lens);
     const wantBody = poseTracker && BODY && (L.skeleton || L.chest || L.digest || L.excretory);
     const handRecent = now - lastHandAt < 500;              // a hand in view gets every frame, the body every third
     const runHands = wantHands && (!wantBody || handRecent || frameNo % 3 === 0);
@@ -683,7 +691,7 @@ function tick(now) {
         if (lms && mat) {
           let jaw = 0; const bs = fr.faceBlendshapes && fr.faceBlendshapes[0];
           if (bs) for (const c of bs.categories) if (c.categoryName === "jawOpen") jaw = c.score;
-          poseFromFace(mat.data, lms, jaw); lostSince = 0;
+          poseFromFace(mat.data, lms, jaw); lostSince = 0; nose = lms[1];
           let x0 = 1, y0 = 1, x1 = 0, y1 = 0;                // the face on screen; body names stay out of it
           for (const k of lms) { if (k.x < x0) x0 = k.x; if (k.x > x1) x1 = k.x; if (k.y < y0) y0 = k.y; if (k.y > y1) y1 = k.y; }
           const mx = (x1 - x0) * 0.15, my = (y1 - y0) * 0.15;
@@ -698,9 +706,8 @@ function tick(now) {
         if (seenHands.length) lastHandAt = now;
       } else if (!wantHands) seenHands = [];
       if (runBody) {                                        // the body is found on its own; no face needed
-        const pr = poseTracker.detectForVideo(poseFrame(), now);
+        const pr = poseTracker.detectForVideo(video, now);
         lastPose = pr.landmarks && pr.landmarks[0] || null;
-        if (maskOn && pr.segmentationMasks) { keepMask(pr.segmentationMasks[0], now); pr.segmentationMasks.forEach(m => m.close && m.close()); }
         if (lastPose) { poseBody(lastPose, now); if (body.on) bodyLost = 0; }
         if (!lastPose || !body.on) { if (!bodyLost) bodyLost = now; body.on = body.on && now - bodyLost < 400; }
       } else if (!wantBody) { body.on = false; lastPose = null; }
@@ -711,15 +718,11 @@ function tick(now) {
     hands.forEach((rig, r) => { if (rigFor[r]) poseHand(rig, rigFor[r][0], rigFor[r][1], now); else rig.group.visible = false; });
     if (body.on) placeLimbs(seenHands.map(h => new THREE.Vector3(h[0].x * W, (1 - h[0].y) * H, 0)));
     const sh = $("shade"), g = sh.getContext("2d"); g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
-    sh.style.opacity = (SEE(st.see) * 0.92).toFixed(2);     // shadows are painted solid, then shown see-through as one piece
-    maskLive = !st.solid && maskOn && body.on && now - maskAt < (want.has("test") ? 5000 : 500);
-    if (!st.solid) {
-      if (maskLive) g.drawImage(maskCv, 0, 0, W, H); else if (body.on) shadeBody(g);
-      if (showHands.length) shadeHands(g, showHands);
-    }
+    sh.style.opacity = (SEE(st.see) * 0.85).toFixed(2);     // shadows are painted solid, then shown see-through as one piece
+    if (!st.solid) { if (body.on) shadeBody(g); if (showHands.length) shadeHands(g, showHands); }
     hint(bodyState === "loading" && !head.on ? "শরীরের মডেল লোড হচ্ছে…"
        : bodyState === "failed" ? "শরীরের মডেল লোড হয়নি। পেজ রিফ্রেশ করো"
-       : head.on || body.on || seenHands.length ? ""
+       : head.on || body.on || seenHands.length ? (lensOn() && !lensUsed ? "আঙুল তুলে ধরো। লেন্স আঙুলের সাথে ঘুরবে" : "")
        : "ক্যামেরার সামনে এসো। আলো যেন গায়ে পড়ে");
     if (!wowDone && (head.on || body.on)) { wowDone = true; xrayWow(); }
     if (st.quiz) {
@@ -732,8 +735,10 @@ function tick(now) {
   } else {
     poseFromOrbit(now); hands.forEach(r => r.group.visible = false);
   }
+  aimLens(now); maskLayers();
   render();
   collectDots(seenHands.length);
+  if (lens) dots = dots.filter(d => Math.hypot(d.x - lens.x, d.y - lens.y) < lens.r * 0.9);   // nothing to tap outside the lens
   if (finger) quizPoint(finger, now);
   drawHud(finger);
   if (rec) recFrame(now);
@@ -746,8 +751,7 @@ async function loadTrackers() {
   const files = await vision.FilesetResolver.forVisionTasks(MP + "/wasm");
   const make = (Kind, model, extra) => async delegate =>
     Kind.createFromOptions(files, Object.assign({ baseOptions: { modelAssetPath: model, delegate }, runningMode: "VIDEO" }, extra));
-  maskOn = !want.has("nomask"); trk.mask = maskOn ? "on" : "off";
-  makeTracker = make(vision.PoseLandmarker, POSE_MODEL, { numPoses: 1, outputSegmentationMasks: maskOn });
+  makeTracker = make(vision.PoseLandmarker, POSE_MODEL, { numPoses: 1 });
   const face = make(vision.FaceLandmarker, FACE_MODEL, { numFaces: 1, outputFacialTransformationMatrixes: true, outputFaceBlendshapes: true });
   const hand = make(vision.HandLandmarker, HAND_MODEL, { numHands: 2 });
   try { faceTracker = await face("GPU"); trk.face = "GPU"; } catch (e) { faceTracker = await face("CPU"); trk.face = "CPU"; }
@@ -860,8 +864,9 @@ for (const b of $("subjectSeg").children) b.onclick = () => {
 for (const b of $("modeSeg").children) b.onclick = () => { if (b.dataset.mode !== st.mode) { endQuiz(true); enter(b.dataset.mode); } };
 $("tNames").onclick = () => { st.names = { bn: "en", en: "off", off: "bn" }[st.names]; store.set("names", st.names); applyStyle(); };
 $("tStyle").onclick = () => { st.solid = !st.solid; applyStyle(); };
-function syncSee() { $("seeRow").hidden = st.solid || st.mode !== "mirror"; $("see").value = Math.round(st.see * 100); }
-$("see").oninput = e => { st.see = e.target.value / 100; store.set("see2", st.see); };
+$("tLens").onclick = () => { st.lens = !st.lens; store.set("lens", st.lens); syncSee(); };
+function syncSee() { $("tLens").classList.toggle("on", st.lens); $("tLens").setAttribute("aria-pressed", String(st.lens)); $("seeRow").hidden = st.mode !== "mirror"; $("see").value = Math.round(st.see * 100); }
+$("see").oninput = e => { st.see = e.target.value / 100; store.set("see3", st.see); };
 $("tQuiz").onclick = startQuiz;
 $("tShot").onclick = snapshot;
 $("tRec").onclick = toggleRec;
@@ -872,10 +877,11 @@ $("cardClose").onclick = closeCard;
 const touches = new Map(); let moved = 0, pinch = 0;
 const hud = $("hud");
 const local = e => { const r = hud.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
-hud.addEventListener("pointerdown", e => { touches.set(e.pointerId, local(e)); moved = 0; pinch = 0; hud.setPointerCapture(e.pointerId); });
+const touchLens = p => { if (lensOn()) { lensTouch = { x: p.x, y: p.y, t: performance.now() }; lensUsed = true; } };   // a finger on the screen moves the lens too
+hud.addEventListener("pointerdown", e => { touches.set(e.pointerId, local(e)); moved = 0; pinch = 0; hud.setPointerCapture(e.pointerId); touchLens(local(e)); });
 hud.addEventListener("pointermove", e => {
   const a = touches.get(e.pointerId); if (!a) return;
-  const p = local(e), dx = p.x - a.x, dy = p.y - a.y; moved += Math.abs(dx) + Math.abs(dy); touches.set(e.pointerId, p);
+  const p = local(e), dx = p.x - a.x, dy = p.y - a.y; moved += Math.abs(dx) + Math.abs(dy); touches.set(e.pointerId, p); touchLens(p);
   if (st.mode !== "explore") return;
   if (touches.size === 2) {
     const [p1, p2] = [...touches.values()], d = Math.hypot(p1.x - p2.x, p1.y - p2.y);
@@ -970,7 +976,7 @@ function saveFile(file) {
   const a = document.createElement("a"); a.href = URL.createObjectURL(file); a.download = file.name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
-let blurTmp = null;
+let blurTmp = null, overTmp = null;
 function paintShot({ c, g, k }) {                           // everything on screen right now, plus the site name
   const r = $("stage").getBoundingClientRect(), L = $("layer").getBoundingClientRect();
   g.fillStyle = "#050607"; g.fillRect(0, 0, c.width, c.height);
@@ -979,8 +985,18 @@ function paintShot({ c, g, k }) {                           // everything on scr
     g.save(); g.translate(W, 0); g.scale(-1, 1); g.drawImage(video, 0, 0, W, H);
     const sh = $("shade"), t = blurTmp || (blurTmp = document.createElement("canvas"));   // shrink then stretch the shadows: a blur that works on every phone
     t.width = Math.ceil(W / 12); t.height = Math.ceil(H / 12); t.getContext("2d").drawImage(sh, 0, 0, t.width, t.height);
-    g.globalAlpha = +sh.style.opacity || 1; g.imageSmoothingQuality = "high"; g.drawImage(t, 0, 0, W, H); g.globalAlpha = 1;
-    g.drawImage($("gl"), 0, 0, W, H); g.restore();
+    // shadows and anatomy go on a spare canvas first, so the lens can cut them out together
+    const o = overTmp || (overTmp = document.createElement("canvas")), s = Math.min(2, k);
+    o.width = Math.round(W * s); o.height = Math.round(H * s);
+    const og = o.getContext("2d"); og.setTransform(s, 0, 0, s, 0, 0);
+    og.globalAlpha = +sh.style.opacity || 1; og.imageSmoothingQuality = "high"; og.drawImage(t, 0, 0, W, H); og.globalAlpha = 1;
+    og.drawImage($("gl"), 0, 0, W, H);
+    if (lens) {
+      const cx = W - lens.x, grad = og.createRadialGradient(cx, lens.y, 0, cx, lens.y, lens.r);
+      grad.addColorStop(0, "#000"); grad.addColorStop(LENS_SOFT, "#000"); grad.addColorStop(1, "rgba(0,0,0,0)");
+      og.globalCompositeOperation = "destination-in"; og.fillStyle = grad; og.fillRect(0, 0, W, H); og.globalCompositeOperation = "source-over";
+    }
+    g.drawImage(o, 0, 0, W, H); g.restore();
   } else g.drawImage($("gl"), 0, 0, W, H);
   g.drawImage(hud, 0, 0, W, H); g.restore();
   if (st.score) {                                             // quiz score badge, top left
