@@ -56,9 +56,11 @@ class PointFilter {
 }
 
 // ---------------------------------------------------------------- state
-const SEE = see => ({ veil: 0.15 + 0.7 * see, shade: 0.2 + 0.58 * see, bone: 0.12 + 0.88 * see });
+// "আমি ↔ হাড়" slider: how dark the shadow over the real person is. Bones always stay at full brightness.
+const SEE = see => 0.45 + 0.47 * see;
+const SHADOW = "#04070d", FEATHER = 0.15;
 const st = {
-  see: store.get("see", 0.3),
+  see: store.get("see2", 0.9),
   mode: null,                      // "mirror" | "explore"
   subject: "head",                 // "head" (face + hands) | "body" (everything below the neck)
   layers: { skull: true, brain: false, muscles: false, eyes: true, hands: true,
@@ -93,8 +95,9 @@ let readyPromise = null;
 function ready() { return readyPromise || (readyPromise = build()); }
 
 const VERT = `
-varying vec3 vNormal; varying vec3 vView; uniform float uFlatView;
+varying vec3 vNormal; varying vec3 vView; varying vec3 vLocal; uniform float uFlatView;
 void main() {
+  vLocal = position;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   vNormal = normalMatrix * normal;
   vView = uFlatView > 0.5 ? vec3(0.0, 0.0, 1.0) : -mv.xyz;
@@ -102,20 +105,22 @@ void main() {
 }`;
 // uMode: 0 = see-through glow, 1 = lit solid, 2 = flat fill
 const FRAG = `
-uniform vec3 uGlow; uniform vec3 uSolid; uniform float uMode, uGain, uAlpha;
-varying vec3 vNormal; varying vec3 vView;
+uniform vec3 uGlow; uniform vec3 uSolid; uniform float uMode, uGain, uAlpha, uFeather, uFade;
+varying vec3 vNormal; varying vec3 vView; varying vec3 vLocal;
 void main() {
   vec3 n = normalize(vNormal);
   float facing = abs(dot(n, normalize(vView)));
-  if (uMode > 1.5) { gl_FragColor = vec4(uGlow, uAlpha); return; }
+  float soft = uFeather > 0.001 ? smoothstep(0.0, uFeather, facing) : 1.0;   // surfaces turning away at the outline fade out
+  float fade = uFade > 0.5 ? smoothstep(-12.4, -9.2, vLocal.y) : 1.0;         // the neck fades out instead of ending in a hard edge
+  if (uMode > 1.5) { gl_FragColor = vec4(uGlow, uAlpha * fade * soft); return; }
   if (uMode > 0.5) {
     if (!gl_FrontFacing) n = -n;
     float lit = max(dot(n, normalize(vec3(0.3, 0.6, 0.75))), 0.0);
     gl_FragColor = vec4(uSolid * (0.3 + 0.75 * lit) + vec3(0.18) * pow(1.0 - facing, 3.0), 1.0);
     return;
   }
-  float edge = pow(1.0 - facing, 2.0);
-  gl_FragColor = vec4(uGlow, clamp((0.04 + edge) * uGain, 0.0, 1.0) * uAlpha);
+  float edge = pow(1.0 - facing, 2.1);
+  gl_FragColor = vec4(uGlow, clamp((0.035 + 0.95 * edge) * uGain * fade, 0.0, 1.0) * soft * uAlpha);
 }`;
 
 function material(glow, solid, gain, mode) {
@@ -123,7 +128,7 @@ function material(glow, solid, gain, mode) {
     vertexShader: VERT, fragmentShader: FRAG, side: THREE.DoubleSide, transparent: true, depthTest: false, depthWrite: false,
     blending: mode === 2 ? THREE.NormalBlending : THREE.AdditiveBlending,
     uniforms: { uGlow: { value: new THREE.Color(glow) }, uSolid: { value: new THREE.Color(solid) }, uMode: { value: mode || 0 },
-                uGain: { value: gain }, uAlpha: { value: 1 }, uFlatView: { value: 0 } },
+                uGain: { value: gain }, uAlpha: { value: 1 }, uFlatView: { value: 0 }, uFeather: { value: 0 }, uFade: { value: 0 } },
   });
 }
 
@@ -163,14 +168,14 @@ async function build() {
   const add = (name, g, layer, glow, solid, gain, order, mode, parent) => {
     const mesh = new THREE.Mesh(g, material(glow, solid, gain, mode));
     mesh.renderOrder = order; mesh.frustumCulled = false; (parent || headGroup).add(mesh);
-    meshes[name] = { mesh, layer, fixed: mode !== undefined };
+    meshes[name] = { mesh, layer, gain, fixed: mode !== undefined };
     return mesh;
   };
-  add("veil", geo.skin, "veil", 0x04070d, 0x04070d, 1, -5, 2);
-  add("outline", geo.skin, "outline", 0x8fa3b8, 0x8fa3b8, 0.32, 0, 0);
+  add("veil", geo.skin, "veil", 0x04070d, 0x04070d, 1, -5, 2).material.uniforms.uFade.value = 1;
+  add("outline", geo.skin, "outline", 0x6fb6ff, 0x6fb6ff, 0.55, 0, 0).material.uniforms.uFade.value = 1;
   add("muscles", geo.muscles, "muscles", 0xff7a6b, 0xb5483f, 0.5, 1);
-  add("cranium", geo.cranium, "skull", 0xe6eef8, 0xe8e1cf, 1, 2);
-  add("jaw", geo.jaw, "skull", 0xe6eef8, 0xe8e1cf, 1, 2, undefined, jawPivot).position.fromArray(META.jawPivot).multiplyScalar(-1);
+  add("cranium", geo.cranium, "skull", 0xbfe3ff, 0xe8e1cf, 1, 2);
+  add("jaw", geo.jaw, "skull", 0xbfe3ff, 0xe8e1cf, 1, 2, undefined, jawPivot).position.fromArray(META.jawPivot).multiplyScalar(-1);
   add("eyes", geo.eyes, "eyes", 0xfff3a8, 0xf3f3ec, 0.9, 3);
   add("cerebrum", geo.cerebrum, "brain", 0xff9fc0, 0xe0a39d, 0.4, 4);
   add("hindbrain", geo.hindbrain, "brain", 0xffc37a, 0xd4ab83, 0.6, 4);
@@ -189,7 +194,7 @@ async function build() {
 let BODY = null, bodyGroup, limbGroup, bodyPromise = null;
 const bodyMeshes = {};             // name -> { mesh, layer, limb: [upper, lower] landmark, rest: Matrix4 }
 const BODY_LOOK = {                // glow colour, solid colour, glow strength
-  ribs: [0xe6eef8, 0xe8e1cf, 0.8], spine: [0xe6eef8, 0xe8e1cf, 0.8], pelvis: [0xe6eef8, 0xe8e1cf, 0.9], girdle: [0xe6eef8, 0xe8e1cf, 0.9],
+  ribs: [0xbfe3ff, 0xe8e1cf, 0.8], spine: [0xbfe3ff, 0xe8e1cf, 0.8], pelvis: [0xbfe3ff, 0xe8e1cf, 0.9], girdle: [0xbfe3ff, 0xe8e1cf, 0.9],
   heart: [0xff5d6c, 0xb8404c, 0.8], lungs: [0xffa8b8, 0xd98f9c, 0.35], trachea: [0x9fd8ff, 0x9fc3d9, 0.8],
   stomach: [0xffc37a, 0xd9a066, 0.7], liver: [0xe08a5a, 0x9c5236, 0.45], pancreas: [0xffe08a, 0xd9bd6a, 0.8],
   smallint: [0xffb59a, 0xd9917a, 0.35], largeint: [0xd99a7a, 0xb07a5e, 0.45], kidneys: [0x9be8c9, 0x8a5a4a, 0.9], bladder: [0xfff3a8, 0xd9cf8a, 0.8],
@@ -202,7 +207,7 @@ async function buildBody() {
   bodyGroup = new THREE.Group(); limbGroup = new THREE.Group();
   bodyGroup.matrixAutoUpdate = limbGroup.matrixAutoUpdate = false;
   for (const m of meta.meshes) {
-    const look = BODY_LOOK[m.name] || [0xe6eef8, 0xe8e1cf, 1];
+    const look = BODY_LOOK[m.name] || [0xbfe3ff, 0xe8e1cf, 1];
     const mesh = new THREE.Mesh(geo[m.name], material(look[0], look[1], look[2]));
     mesh.frustumCulled = false; mesh.renderOrder = m.layer === "skeleton" ? 1 : 2;
     const info = { mesh, layer: m.layer, limb: m.limb || null, rest: null,
@@ -299,10 +304,36 @@ function orbitBody() {
   for (const k in bodyMeshes) { const m = bodyMeshes[k]; if (m.limb || m.neck) { m.seen = true; m.mesh.matrix.copy(m.rest); m.mesh.matrixWorldNeedsUpdate = true; } }
   body.on = true;
 }
-function shadeBody(g) {                                     // darken the real body so the glow reads on any clothes
+// The pose tracker can also say which pixels are the person. That outline is the "shadow person" behind the bones.
+let maskOn = false, maskAt = -1e9, maskCv = null, maskImg = null, maskCost = 0, maskN = 0;
+function keepMask(m, now) {
+  if (!m) return;
+  const w = m.width, h = m.height, step = Math.ceil(w / 320), mw = Math.floor(w / step), mh = Math.floor(h / step);
+  const t0 = performance.now(), f = m.getAsFloat32Array();
+  if (!maskCv) maskCv = document.createElement("canvas");
+  if (maskCv.width !== mw || maskCv.height !== mh) {
+    maskCv.width = mw; maskCv.height = mh; maskImg = maskCv.getContext("2d").createImageData(mw, mh);
+    for (let i = 0; i < mw * mh; i++) { maskImg.data[i * 4] = 4; maskImg.data[i * 4 + 1] = 7; maskImg.data[i * 4 + 2] = 13; }
+  }
+  const d = maskImg.data;
+  for (let yy = 0, i = 3; yy < mh; yy++) for (let xx = 0, k = yy * step * w; xx < mw; xx++, k += step, i += 4) d[i] = f[k] * 255;
+  maskCv.getContext("2d").putImageData(maskImg, 0, 0); maskAt = now;
+  maskCost += (performance.now() - t0 - maskCost) * 0.1;
+  if (DEBUG) window.xrMask = maskCv;
+}
+let poseCv = null;
+function poseFrame() {                                      // a small copy of the camera picture: the tracker shrinks it anyway, and a small outline is quick to read back
+  if (!maskOn) return video;
+  const c = poseCv || (poseCv = document.createElement("canvas")), w = 320, h = Math.round(320 * video.videoHeight / video.videoWidth) || 240;
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  c.getContext("2d").drawImage(video, 0, 0, w, h);
+  return c;
+}
+function dropMask() { maskOn = false; trk.mask = "off (slow)"; try { poseTracker.setOptions({ outputSegmentationMasks: false }); } catch (e) {} }
+function shadeBody(g) {                                     // rough shadow of the body, used when the tracker gives no outline
   const P = body.pts, Q = body.Q, x = q => q.x, y = q => H - q.y, wide = bR.length();
-  g.lineJoin = g.lineCap = "round"; g.strokeStyle = g.fillStyle = `rgba(4,7,13,${SEE(st.see).shade})`;
-  g.lineWidth = wide * 0.3; g.beginPath();
+  g.lineJoin = g.lineCap = "round"; g.strokeStyle = g.fillStyle = SHADOW;
+  g.lineWidth = wide * 0.34; g.beginPath();
   [P[11], P[12], body.hips[1], body.hips[0]].forEach((q, k) => k ? g.lineTo(x(q), y(q)) : g.moveTo(x(q), y(q)));
   g.closePath(); g.fill(); g.stroke();
   g.lineWidth = wide * 0.17; g.beginPath();                 // about the thickness of an arm
@@ -369,6 +400,7 @@ function layout() {
   cam.aspect = W / H; cam.updateProjectionMatrix(); baseProj = cam.projectionMatrix.clone();
   ortho.right = W; ortho.top = H; ortho.updateProjectionMatrix();
   for (const id of ["hud", "shade"]) { const c = $(id); c.width = Math.round(W * DPR); c.height = Math.round(H * DPR); }
+  $("shade").style.filter = `blur(${Math.max(2, W * 0.006).toFixed(1)}px)`;   // soft edge on the shadows
 }
 
 // ---------------------------------------------------------------- head pose
@@ -460,7 +492,7 @@ function poseHand(rig, lms, flip, now) {
 }
 
 function shadeHands(g, list) {                              // darken the real hand so its bones read clearly
-  g.lineJoin = g.lineCap = "round"; g.strokeStyle = g.fillStyle = `rgba(4,7,13,${Math.min(0.8, SEE(st.see).shade + 0.04)})`;
+  g.lineJoin = g.lineCap = "round"; g.strokeStyle = g.fillStyle = SHADOW;
   for (const lms of list) {
     const x = i => lms[i].x * W, y = i => lms[i].y * H;
     const d = Math.hypot(x(5) - x(17), y(5) - y(17)) || 1;
@@ -571,6 +603,7 @@ function debugLines() {
     `found: head ${head.on ? "yes" : "no"}  hands ${seenHands.length}  body ${body.on ? "yes" : "no"}`,
     `shoulder ${c(11)} ${c(12)}  elbow ${c(13)} ${c(14)}`,
     `wrist ${c(15)} ${c(16)}  hip ${c(23)} ${c(24)}`,
+    `outline ${trk.mask || "-"}  ${maskCost.toFixed(1)} ms`,
     "on: " + Object.keys(st.layers).filter(k => st.layers[k]).map(k => k.slice(0, 4)).join(" ")];
 }
 
@@ -579,8 +612,14 @@ let faceTracker = null, handTracker = null, poseTracker = null, makeTracker = nu
 let seenHands = [], seenFlip = [], frameNo = 0, lastPose = null, bodyLost = 0, bodyState = "", lastHandAt = -1e9, faceBox = null;
 let fps = 0, fpsN = 0, fpsT = 0;
 const trk = {};                                             // which processor each tracker runs on, for #debug
-function countFrame(now) { fpsN++; if (now - fpsT > 1000) { fps = Math.round(fpsN * 1000 / (now - fpsT)); fpsN = 0; fpsT = now; } }
-let wowDone = false;
+function countFrame(now) {
+  fpsN++; if (now - fpsT <= 1000) return;
+  fps = Math.round(fpsN * 1000 / (now - fpsT)); fpsN = 0; fpsT = now;
+  // five slow seconds in a row with the person outline on: too heavy for this phone, use the rough shadow instead (#mask keeps it on)
+  maskN = maskOn && now - maskAt < 1500 && fps < 10 && !want.has("mask") ? maskN + 1 : 0;
+  if (maskN >= 5) dropMask();
+}
+let wowDone = false, maskLive = false;
 function xrayWow() {                                         // one scan sweep, a soft "zap" and a short buzz
   if (st.mode !== "mirror") return;
   const el = document.createElement("div"); el.className = "scan"; $("stage").appendChild(el);
@@ -604,9 +643,13 @@ function render() {
     m.mesh.visible = m.layer === "veil" ? st.mode === "mirror" && !st.solid
                    : m.layer === "outline" ? !st.solid : !!st.layers[m.layer];
   }
-  const sv = SEE(st.see);
-  meshes.veil.mesh.material.uniforms.uAlpha.value = sv.veil;
-  for (const k in meshes) if (k !== "veil" && meshes[k].mesh.material.uniforms) meshes[k].mesh.material.uniforms.uAlpha.value = mirror && !st.solid ? sv.bone : 1;
+  const glow = mirror && !st.solid, dark = SEE(st.see), L = st.layers;
+  // when the person outline already darkens the face, the head veil only adds what is missing
+  meshes.veil.mesh.material.uniforms.uAlpha.value = maskLive ? 1 - (1 - dark) / (1 - dark * 0.92) : dark;
+  // glowing light adds up, so with several head layers on each one gets a smaller share
+  const share = 1 / (0.4 + 0.6 * Math.max(1, (L.skull ? 1 : 0) + (L.brain ? 1 : 0) + (L.muscles ? 1 : 0)));
+  for (const k in meshes) if (k !== "veil") meshes[k].mesh.material.uniforms.uGain.value = meshes[k].gain * (glow && k !== "outline" ? share : 1);
+  allMaterials(m => { m.uniforms.uFeather.value = glow ? FEATHER : 0; });
   if (BODY) {
     bodyGroup.visible = limbGroup.visible = showBody && body.on;
     for (const k in bodyMeshes) { const m = bodyMeshes[k]; m.mesh.visible = !!st.layers[m.layer] && (!m.limb || m.seen); }
@@ -655,8 +698,9 @@ function tick(now) {
         if (seenHands.length) lastHandAt = now;
       } else if (!wantHands) seenHands = [];
       if (runBody) {                                        // the body is found on its own; no face needed
-        const pr = poseTracker.detectForVideo(video, now);
+        const pr = poseTracker.detectForVideo(poseFrame(), now);
         lastPose = pr.landmarks && pr.landmarks[0] || null;
+        if (maskOn && pr.segmentationMasks) { keepMask(pr.segmentationMasks[0], now); pr.segmentationMasks.forEach(m => m.close && m.close()); }
         if (lastPose) { poseBody(lastPose, now); if (body.on) bodyLost = 0; }
         if (!lastPose || !body.on) { if (!bodyLost) bodyLost = now; body.on = body.on && now - bodyLost < 400; }
       } else if (!wantBody) { body.on = false; lastPose = null; }
@@ -666,8 +710,13 @@ function tick(now) {
     showHands.forEach((h, i) => { let r = seenFlip[i] ? 0 : 1; if (rigFor[r]) r = 1 - r; if (!rigFor[r]) rigFor[r] = [h, seenFlip[i]]; });
     hands.forEach((rig, r) => { if (rigFor[r]) poseHand(rig, rigFor[r][0], rigFor[r][1], now); else rig.group.visible = false; });
     if (body.on) placeLimbs(seenHands.map(h => new THREE.Vector3(h[0].x * W, (1 - h[0].y) * H, 0)));
-    const g = $("shade").getContext("2d"); g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
-    if (!st.solid) { if (body.on) shadeBody(g); if (showHands.length) shadeHands(g, showHands); }
+    const sh = $("shade"), g = sh.getContext("2d"); g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
+    sh.style.opacity = (SEE(st.see) * 0.92).toFixed(2);     // shadows are painted solid, then shown see-through as one piece
+    maskLive = !st.solid && maskOn && body.on && now - maskAt < (want.has("test") ? 5000 : 500);
+    if (!st.solid) {
+      if (maskLive) g.drawImage(maskCv, 0, 0, W, H); else if (body.on) shadeBody(g);
+      if (showHands.length) shadeHands(g, showHands);
+    }
     hint(bodyState === "loading" && !head.on ? "শরীরের মডেল লোড হচ্ছে…"
        : bodyState === "failed" ? "শরীরের মডেল লোড হয়নি। পেজ রিফ্রেশ করো"
        : head.on || body.on || seenHands.length ? ""
@@ -687,6 +736,7 @@ function tick(now) {
   collectDots(seenHands.length);
   if (finger) quizPoint(finger, now);
   drawHud(finger);
+  if (rec) recFrame(now);
 }
 
 // ---------------------------------------------------------------- camera + modes
@@ -696,7 +746,8 @@ async function loadTrackers() {
   const files = await vision.FilesetResolver.forVisionTasks(MP + "/wasm");
   const make = (Kind, model, extra) => async delegate =>
     Kind.createFromOptions(files, Object.assign({ baseOptions: { modelAssetPath: model, delegate }, runningMode: "VIDEO" }, extra));
-  makeTracker = make(vision.PoseLandmarker, POSE_MODEL, { numPoses: 1 });
+  maskOn = !want.has("nomask"); trk.mask = maskOn ? "on" : "off";
+  makeTracker = make(vision.PoseLandmarker, POSE_MODEL, { numPoses: 1, outputSegmentationMasks: maskOn });
   const face = make(vision.FaceLandmarker, FACE_MODEL, { numFaces: 1, outputFacialTransformationMatrixes: true, outputFaceBlendshapes: true });
   const hand = make(vision.HandLandmarker, HAND_MODEL, { numHands: 2 });
   try { faceTracker = await face("GPU"); trk.face = "GPU"; } catch (e) { faceTracker = await face("CPU"); trk.face = "CPU"; }
@@ -728,7 +779,7 @@ async function enter(mode) {
       status("ক্যামেরার অনুমতি চাওয়া হচ্ছে…");
       if (!stream) {                                        // never open the camera twice: many phones refuse
         stream = want.get("test") ? await fakeCamera(want.get("test"))
-               : await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 960 }, height: { ideal: 720 } }, audio: false });
+               : await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
         video.srcObject = stream; await video.play();
       }
     }
@@ -809,11 +860,11 @@ for (const b of $("subjectSeg").children) b.onclick = () => {
 for (const b of $("modeSeg").children) b.onclick = () => { if (b.dataset.mode !== st.mode) { endQuiz(true); enter(b.dataset.mode); } };
 $("tNames").onclick = () => { st.names = { bn: "en", en: "off", off: "bn" }[st.names]; store.set("names", st.names); applyStyle(); };
 $("tStyle").onclick = () => { st.solid = !st.solid; applyStyle(); };
-const FILM = "grayscale(1) sepia(.35) hue-rotate(170deg) saturate(1.6) contrast(1.25) brightness(.8)";
-function syncSee() { $("stage").classList.toggle("film", !st.solid); $("seeRow").hidden = st.solid || st.mode !== "mirror"; $("see").value = Math.round(st.see * 100); }
-$("see").oninput = e => { st.see = e.target.value / 100; store.set("see", st.see); };
+function syncSee() { $("seeRow").hidden = st.solid || st.mode !== "mirror"; $("see").value = Math.round(st.see * 100); }
+$("see").oninput = e => { st.see = e.target.value / 100; store.set("see2", st.see); };
 $("tQuiz").onclick = startQuiz;
 $("tShot").onclick = snapshot;
+$("tRec").onclick = toggleRec;
 $("quizStop").onclick = () => endQuiz(true);
 $("cardClose").onclick = closeCard;
 
@@ -908,16 +959,29 @@ function showResult() {
 }
 
 // ---------------------------------------------------------------- photo
-async function snapshot() {
+function shotCanvas(wide) {                                 // a canvas the shape of the screen, for a photo or a video
+  const r = $("stage").getBoundingClientRect(), k = Math.min(2, Math.max(1, wide / r.width));
+  const c = document.createElement("canvas"); c.width = Math.round(r.width * k / 2) * 2; c.height = Math.round(r.height * k / 2) * 2;
+  return { c, g: c.getContext("2d"), k };
+}
+const SHARE_TEXT = () => st.score ? `এক্স-রে বায়োলজি কুইজে আমার স্কোর ${bnNum(st.score.s)}/${bnNum(st.score.n)}। তুমি কত পাবে? https://${SITE_NAME}` : `ক্যামেরায় নিজের হাড় দেখো: https://${SITE_NAME}`;
+const canShareFile = file => !!(navigator.canShare && navigator.canShare({ files: [file] }));
+function saveFile(file) {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(file); a.download = file.name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+let blurTmp = null;
+function paintShot({ c, g, k }) {                           // everything on screen right now, plus the site name
   const r = $("stage").getBoundingClientRect(), L = $("layer").getBoundingClientRect();
-  const k = Math.min(2, Math.max(1, 1080 / r.width));
-  const c = document.createElement("canvas"); c.width = Math.round(r.width * k); c.height = Math.round(r.height * k);
-  const g = c.getContext("2d");
   g.fillStyle = "#050607"; g.fillRect(0, 0, c.width, c.height);
-  render();                                                 // draw the 3D layer right now so its pixels can be copied
   g.save(); g.scale(k, k); g.translate(L.left - r.left, L.top - r.top);
-  if (st.mode === "mirror") { g.save(); g.translate(W, 0); g.scale(-1, 1); if (!st.solid) g.filter = FILM; g.drawImage(video, 0, 0, W, H); g.filter = "none"; g.drawImage($("shade"), 0, 0, W, H); g.drawImage($("gl"), 0, 0, W, H); g.restore(); }
-  else g.drawImage($("gl"), 0, 0, W, H);
+  if (st.mode === "mirror") {
+    g.save(); g.translate(W, 0); g.scale(-1, 1); g.drawImage(video, 0, 0, W, H);
+    const sh = $("shade"), t = blurTmp || (blurTmp = document.createElement("canvas"));   // shrink then stretch the shadows: a blur that works on every phone
+    t.width = Math.ceil(W / 12); t.height = Math.ceil(H / 12); t.getContext("2d").drawImage(sh, 0, 0, t.width, t.height);
+    g.globalAlpha = +sh.style.opacity || 1; g.imageSmoothingQuality = "high"; g.drawImage(t, 0, 0, W, H); g.globalAlpha = 1;
+    g.drawImage($("gl"), 0, 0, W, H); g.restore();
+  } else g.drawImage($("gl"), 0, 0, W, H);
   g.drawImage(hud, 0, 0, W, H); g.restore();
   if (st.score) {                                             // quiz score badge, top left
     const t1 = "কুইজে আমার স্কোর", t2 = bnNum(st.score.s) + "/" + bnNum(st.score.n);
@@ -932,14 +996,55 @@ async function snapshot() {
   g.fillStyle = "rgba(3,5,10,.6)"; g.fillRect(0, c.height - 64 * k, c.width, 64 * k);
   g.fillStyle = "#fff"; g.fillText(st.score ? "তুমি কত পাবে? এক্স-রে বায়োলজিতে খেলো" : "এক্স-রে বায়োলজি · Board & Beyond", pad, c.height - 36 * k);
   g.font = `500 ${Math.round(14 * k)}px "JetBrains Mono", monospace`; g.fillStyle = "#ffb02e"; g.fillText(SITE_NAME, pad, c.height - 14 * k);
-  const blob = await new Promise(res => c.toBlob(res, "image/jpeg", 0.9));
+  g.textBaseline = "alphabetic";
+}
+async function snapshot() {
+  const shot = shotCanvas(1080);
+  render();                                                 // draw the 3D layer right now so its pixels can be copied
+  paintShot(shot);
+  const blob = await new Promise(res => shot.c.toBlob(res, "image/jpeg", 0.9));
   if (!blob) return;
   const file = new File([blob], "xray-biology.jpg", { type: "image/jpeg" });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], text: st.score ? `এক্স-রে বায়োলজি কুইজে আমার স্কোর ${bnNum(st.score.s)}/${bnNum(st.score.n)}। তুমি কত পাবে? https://${SITE_NAME}` : `নিজের শরীরে জীববিজ্ঞান শেখো: https://${SITE_NAME}` }); return; } catch (e) { if (e.name === "AbortError") return; }
+  if (canShareFile(file)) {
+    try { await navigator.share({ files: [file], text: SHARE_TEXT() }); return; } catch (e) { if (e.name === "AbortError") return; }
   }
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = file.name; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  saveFile(file);
+}
+
+// ---------------------------------------------------------------- video clip (no sound, up to 10 seconds)
+const REC_MS = 10000;
+let rec = null;
+function toggleRec() {
+  if (rec) { rec.mr.stop(); return; }
+  if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) { hint("এই ব্রাউজারে ভিডিও রেকর্ড হয় না। ছবি তোলো।"); return; }
+  const shot = shotCanvas(720), parts = [];
+  // mp4 first: WhatsApp, Facebook and Instagram all take it
+  const type = ["video/mp4;codecs=avc1.42E01E", "video/mp4", "video/webm;codecs=vp9", "video/webm"].find(t => MediaRecorder.isTypeSupported(t));
+  let mr;
+  try { mr = new MediaRecorder(shot.c.captureStream(30), type ? { mimeType: type, videoBitsPerSecond: 4e6 } : {}); }
+  catch (e) { hint("এই ব্রাউজারে ভিডিও রেকর্ড হয় না। ছবি তোলো।"); return; }
+  mr.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
+  mr.onstop = () => {
+    clearTimeout(rec.timer); rec = null; $("tRec").textContent = "ভিডিও"; $("tRec").classList.remove("rec");
+    if (parts.length) showClip(new Blob(parts, { type: (mr.mimeType || type || "video/webm").split(";")[0] }));
+  };
+  rec = { mr, shot, from: performance.now(), timer: setTimeout(() => mr.stop(), REC_MS) };
+  closeCard(); $("tRec").classList.add("rec"); paintShot(shot); mr.start();
+}
+function recFrame(now) {                                    // called after each drawn frame while recording
+  paintShot(rec.shot);
+  $("tRec").textContent = "■ " + bnNum(Math.max(0, Math.ceil((REC_MS - (now - rec.from)) / 1000)));
+}
+function showClip(blob) {
+  const file = new File([blob], "xray-biology." + (blob.type.includes("mp4") ? "mp4" : "webm"), { type: blob.type });
+  const url = URL.createObjectURL(blob), share = canShareFile(file);
+  $("resultBody").innerHTML = `<video class="clip" src="${url}" controls playsinline muted loop autoplay></video>` +
+    `<div class="row">${share ? `<button class="btn primary" id="clipShare">শেয়ার করো</button>` : ""}` +
+    `<button class="btn ${share ? "line" : "primary"}" id="clipSave">সেভ করো</button><button class="btn ghost" id="done">বন্ধ</button></div>`;
+  $("result").hidden = false; $("bottom").hidden = true;
+  if (share) $("clipShare").onclick = () => navigator.share({ files: [file], text: SHARE_TEXT() }).catch(() => {});
+  $("clipSave").onclick = () => saveFile(file);
+  $("done").onclick = () => { $("result").hidden = true; $("bottom").hidden = false; $("resultBody").innerHTML = ""; URL.revokeObjectURL(url); };
 }
 
 // ---------------------------------------------------------------- links from books and reading pages: #part=<id> or #model
