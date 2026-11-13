@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Anek+Bangla:wdth,wght@75..125,400..800&family=Hind+Siliguri:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=b87b87c1">
+<link rel="stylesheet" href="style.css?v=7e278c52">
 </head>
 <body class="app">
 
@@ -34,6 +34,7 @@
       <button class="back" id="back" aria-label="হোম">←</button>
       <div class="seg" id="modeSeg">
         <button data-mode="mirror">আয়না</button>
+        <button data-mode="lens">লেন্স</button>
         <button data-mode="explore">মডেল</button>
       </div>
       <div class="seg right" id="subjectSeg">
@@ -49,7 +50,7 @@
     </div>
 
     <footer class="bottom" id="bottom">
-      <div class="seeRow" id="seeRow" hidden><button id="tLens" class="chip" aria-pressed="true">লেন্স</button><span>আমি</span><input type="range" id="see" min="0" max="100" step="1" aria-label="নিজেকে বেশি দেখাও নাকি হাড় বেশি"><span>হাড়</span></div>
+      <div class="seeRow" id="seeRow" hidden><span>আমি</span><input type="range" id="see" min="0" max="100" step="1" aria-label="নিজেকে বেশি দেখাও নাকি হাড় বেশি"><span>হাড়</span></div>
       <div class="chips" id="layerChips"></div>
       <div class="tools">
         <button id="tNames" class="tool">নাম</button>
@@ -117,6 +118,6 @@
   </footer>
 </main>
 
-<script type="module" src="app.js?v=b87b87c1"></script>
+<script type="module" src="app.js?v=7e278c52"></script>
 </body>
 </html>
