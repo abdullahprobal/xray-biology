@@ -160,3 +160,5 @@ h2 { margin: 0 0 18px; font: 700 26px/1.25 var(--display); }
 .sitefoot { max-width: 680px; margin: 0 auto; padding: 24px 20px 48px; border-top: 1px solid var(--line); font-size: 13px; color: var(--dim); }
 .sitefoot p { margin: 6px 0; }
 .read .ad { min-height: 280px; }
+
+.read .draft { border-left: 2px solid var(--lamp); padding: 8px 12px; color: var(--dim); font-size: 14px; margin-top: 32px; }

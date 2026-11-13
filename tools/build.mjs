@@ -1,6 +1,6 @@
 // Builds the reading pages and copies content into site/. Run: node tools/build.mjs
 // Edit content/parts.json and content/promos.json, never the generated files in site/read or site/data.
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,7 @@ const promo = (slot, i = 0) => {
 };
 
 // Paste the AdSense code here after the site is approved. It then appears on every reading page.
+const ADS_JS = `<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8098716292767078" crossorigin="anonymous"></script>`;
 const AD_SLOT = `<div class="ad" aria-label="বিজ্ঞাপন"><!-- AdSense slot --></div>`;
 
 const MENU = up => `<header class="sitetop"><a class="brand" href="${up}index.html">এক্স-রে বায়োলজি</a><nav class="menu"><a href="${up}index.html">ক্যামেরা</a><a href="${up}read/index.html">পড়ো</a><a href="${up}about.html">পরিচিতি</a><a href="${up}contact.html">যোগাযোগ</a></nav></header>`;
@@ -46,6 +47,7 @@ const page = ({ title, desc, path, body, up = "../", ld = [] }) => `<!doctype ht
 <meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(desc)}"><meta property="og:url" content="${BASE}${path}">
 <meta name="twitter:card" content="summary">
 ${ld.map(o => `<script type="application/ld+json">${JSON.stringify(o).replace(/</g, "\\u003c")}</script>`).join("\n")}
+${up === "../" ? ADS_JS : ""}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Anek+Bangla:wdth,wght@75..125,400..800&family=Hind+Siliguri:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -101,6 +103,14 @@ content.parts.forEach((p, i) => {
   const see = !p.hand
     ? `<a class="btn primary" href="../index.html#part=${p.id}">৩ডি মডেলে দেখো</a>`
     : `<a class="btn primary" href="../index.html">ক্যামেরায় নিজের হাতে দেখো</a>`;
+  const pf = join(root, `content/pages/${p.id}.json`);
+  const x = existsSync(pf) ? JSON.parse(readFileSync(pf, "utf8")) : null;
+  const sec = (h, v) => !v ? "" : Array.isArray(v)
+    ? `<h2>${h}</h2>\n<ul class="facts">${v.map(t => `<li>${esc(t)}</li>`).join("")}</ul>`
+    : `<h2>${h}</h2>\n${String(v).split("\n\n").map(t => `<p>${esc(t)}</p>`).join("\n")}`;
+  const long = !x ? "" : [x.reviewed_by ? `<p class="draft">যাচাই করেছেন: ${esc(x.reviewed_by)}</p>` : `<p class="draft">খসড়া: এই লেখা এখনো জীববিজ্ঞান শিক্ষকের যাচাই হয়নি। পাঠ্যবইয়ের সাথে মিলিয়ে নাও।</p>`,
+    sec("কোথায় থাকে", x.location), sec("গঠন", x.structure), sec("কাজ", x.function), sec("কীভাবে কাজ করে", x.how_it_works),
+    sec("পরীক্ষার জন্য গুরুত্বপূর্ণ তথ্য", x.exam_facts), sec("যে ভুলগুলো সাধারণত হয়", x.common_mistakes), sec("মনে রাখার কৌশল", x.mnemonic), AD_SLOT].join("\n");
   const body = `<p class="en">${esc(p.en)} · ${esc(L.en)}</p>
 <h1>${esc(p.bn)}</h1>
 <p class="lead">${esc(p.about)}</p>
@@ -109,6 +119,7 @@ content.parts.forEach((p, i) => {
 <ul class="facts">${p.points.map(x => `<li>${esc(x)}</li>`).join("")}</ul>
 <p class="word">${esc(p.meaning)}</p>
 ${AD_SLOT}
+${long}
 <h2>${esc(L.bn)}: আরও অংশ</h2>
 <ul class="list">${mates.map(o => `<li><a href="${o.id}.html">${esc(o.bn)} <small>${esc(o.en)}</small></a></li>`).join("")}</ul>
 <section class="rows">${promo("read", i)}</section>`;
