@@ -268,16 +268,21 @@ function placeLimbs(handWrists) {
   const P = body.pts, Q = body.Q, ok = body.ok.slice();
   P.forEach((p, i) => Q[i].copy(p));
   const reach = bR.length() * 1.5;
-  for (const hw of handWrists) {
+  const guess = {};                                         // elbows we place ourselves so a tracked hand never floats on its own
+  for (const { w: hw, k: hk } of handWrists) {
     const i = hw.distanceTo(P[15]) < hw.distanceTo(P[16]) ? 15 : 16;
-    if (hw.distanceTo(P[i]) < reach) { Q[i].copy(hw); ok[i] = true; }
+    if (hw.distanceTo(P[i]) < reach) {
+      Q[i].copy(hw); ok[i] = true;
+      // elbow out of view or unsure: run the forearm back from the wrist, along the hand's own line (forearm ~2.6x wrist-to-knuckle)
+      if (!ok[i - 2]) { Q[i - 2].copy(hw).addScaledVector(e1.subVectors(hw, hk), 2.6); guess[i - 2] = true; }
+    }
   }
   limbGroup.matrix.identity(); limbGroup.matrixWorldNeedsUpdate = true;
   for (const k in bodyMeshes) {
     const m = bodyMeshes[k];
     if (m.neck) { placeNeck(m); continue; }
     if (!m.limb) continue;
-    const [a, b] = m.limb; m.seen = ok[a] && ok[b];
+    const [a, b] = m.limb; m.seen = (ok[a] || (guess[a] && (b === 15 || b === 16))) && ok[b];   // a guessed elbow carries only the forearm
     if (!m.seen) continue;
     e1.subVectors(Q[b], Q[a]); const L = Math.max(e1.length(), 1e-6);
     e2.set(-e1.y, e1.x, 0); e3.set(0, 0, L);
@@ -314,8 +319,10 @@ function orbitBody() {
 function shadeBody(g) {                                     // light shadow behind the trunk and limbs so the glow reads on any clothes
   const P = body.pts, Q = body.Q, x = q => q.x, y = q => H - q.y, wide = bR.length();
   g.lineJoin = g.lineCap = "round"; g.strokeStyle = g.fillStyle = SHADOW;
-  g.lineWidth = wide * 0.34; g.beginPath();
-  [P[11], P[12], body.hips[1], body.hips[0]].forEach((q, k) => k ? g.lineTo(x(q), y(q)) : g.moveTo(x(q), y(q)));
+  // the trunk: shoulders pulled in a little so the shadow follows the ribcage instead of forming a box
+  const S = [P[11], P[12]].map((q, i, a) => ({ x: q.x + (a[1 - i].x - q.x) * 0.1, y: q.y + (a[1 - i].y - q.y) * 0.1 }));
+  g.lineWidth = wide * 0.22; g.beginPath();
+  [S[0], S[1], body.hips[1], body.hips[0]].forEach((q, k) => k ? g.lineTo(x(q), y(q)) : g.moveTo(x(q), y(q)));
   g.closePath(); g.fill(); g.stroke();
   g.lineWidth = wide * 0.17; g.beginPath();                 // about the thickness of an arm
   for (const k in bodyMeshes) {
@@ -545,7 +552,8 @@ function drawHud(finger) {
     if (!d.named) continue;
     d.dir = d.x > W / 2 ? 1 : -1;
     const room = g.measureText(label(d)).width + 40;        // flip a name that would run off the screen
-    if (d.dir < 0 && d.x - room < 0) d.dir = 1; else if (d.dir > 0 && d.x + room > W) d.dir = -1;
+    // the camera picture is wider than the phone screen, so test against the part actually on screen
+    if (d.dir < 0 && d.x - room < view.x) d.dir = 1; else if (d.dir > 0 && d.x + room > view.x + view.w) d.dir = -1;
     d.ly = Math.max(d.y, lastY[d.dir] + 27); lastY[d.dir] = d.ly;
   }
   for (const d of dots) {
@@ -689,8 +697,9 @@ function render() {
   const share = 1 / (0.4 + 0.6 * Math.max(1, (L.skull ? 1 : 0) + (L.brain ? 1 : 0) + (L.muscles ? 1 : 0)));
   allMaterials((m, info) => {
     const u = m.uniforms, line = info.layer === "outline";
-    u.uFeather.value = lensLook ? FEATHER : 0;
-    if (info.layer === "veil" || line) u.uFade.value = lensLook ? 1 : 0;
+    // soft outline and a neck that fades out, in both camera tabs: a hard-edged veil looks like a black hood
+    u.uFeather.value = glow ? (lensLook ? FEATHER : 0.3) : 0;
+    if (info.layer === "veil" || line) u.uFade.value = glow ? 1 : 0;
     if (info.layer === "veil") return;
     if (line) u.uGlow.value.setHex(lensLook ? m.userData.glow : OLD.outline);
     else if (m.userData.glow === 0xbfe3ff) u.uGlow.value.setHex(lensLook ? 0xbfe3ff : OLD.bone);
@@ -755,11 +764,11 @@ function tick(now) {
     const rigFor = [null, null];                            // keep each hand on its own rig so smoothing never mixes them
     showHands.forEach((h, i) => { let r = seenFlip[i] ? 0 : 1; if (rigFor[r]) r = 1 - r; if (!rigFor[r]) rigFor[r] = [h, seenFlip[i]]; });
     hands.forEach((rig, r) => { if (rigFor[r]) poseHand(rig, rigFor[r][0], rigFor[r][1], now); else rig.group.visible = false; });
-    if (body.on) placeLimbs(seenHands.map(h => new THREE.Vector3(h[0].x * W, (1 - h[0].y) * H, 0)));
+    if (body.on) placeLimbs(seenHands.map(h => ({ w: new THREE.Vector3(h[0].x * W, (1 - h[0].y) * H, 0), k: new THREE.Vector3(h[9].x * W, (1 - h[9].y) * H, 0) })));
     const sh = $("shade"), g = sh.getContext("2d"); g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
     // shadows are painted solid, then shown see-through as one piece; the lens tab makes them lighter and soft-edged
     sh.style.opacity = st.lens ? (SEE(st.see) * 0.85).toFixed(2) : OLD.shade;
-    sh.style.filter = st.lens ? `blur(${Math.max(2, W * 0.006).toFixed(1)}px)` : "none";
+    sh.style.filter = `blur(${Math.max(3, W * (st.lens ? 0.006 : 0.02)).toFixed(1)}px)`;   // soft shadow edges, never hard black shapes
     if (!st.solid) { if (body.on) shadeBody(g); if (showHands.length) shadeHands(g, showHands); }
     hint(bodyState === "loading" && !head.on ? "শরীরের মডেল লোড হচ্ছে…"
        : bodyState === "failed" ? "শরীরের মডেল লোড হয়নি। পেজ রিফ্রেশ করো"
