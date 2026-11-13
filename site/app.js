@@ -60,9 +60,12 @@ class PointFilter {
 const SEE = see => 0.1 + 0.8 * see;
 const LENS_SOFT = 0.55;                                      // the lens is fully clear up to this share of its radius, then fades out
 const SHADOW = "#04070d", FEATHER = 0.15;
+// Two camera looks. Full body (default): dark shadow over the person, bright bones everywhere.
+// Lens: the person stays clearly visible and the anatomy shows only inside a round window that follows the fingertip.
+const seeKey = () => (st.lens ? "seeLens" : "seeFull"), seeSaved = () => store.get(seeKey(), st.lens ? 0.375 : 0.95);
 const st = {
-  see: store.get("see3", 0.375),   // the real person stays clearly visible
-  lens: store.get("lens", true),   // X-ray lens: anatomy shows only inside a round window that follows the fingertip
+  see: 0.95,
+  lens: store.get("lens2", false),
   mode: null,                      // "mirror" | "explore"
   subject: "head",                 // "head" (face + hands) | "body" (everything below the neck)
   layers: { skull: true, brain: false, muscles: false, eyes: true, hands: true,
@@ -569,7 +572,9 @@ function drawHud(finger) {
       g.globalAlpha = 0.75; g.beginPath(); g.moveTo(d.x + d.dir * (hot ? 10 : 7), d.y); g.lineTo(d.tx - d.dir * 5, d.ly);
       g.lineWidth = 1; g.strokeStyle = hot || col; g.stroke();
       g.globalAlpha = 1; g.textAlign = d.dir < 0 ? "right" : "left";
-      g.lineWidth = 3.5; g.strokeStyle = "rgba(4,7,13,.9)"; g.strokeText(t, d.tx, d.ly + 1);   // dark outline keeps the name readable on any background
+      // dark plate behind the name so it stays readable over any camera background
+      const tw = g.measureText(t).width, px = d.dir < 0 ? d.tx - tw - 5 : d.tx - 5;
+      g.fillStyle = "rgba(5,6,7,.78)"; g.beginPath(); g.roundRect ? g.roundRect(px, d.ly - 10, tw + 10, 21, 4) : g.rect(px, d.ly - 10, tw + 10, 21); g.fill();
       g.fillStyle = hot || "#fff"; g.fillText(t, d.tx, d.ly + 1);
     }
   }
@@ -655,8 +660,8 @@ function render() {
   allMaterials((m, info) => {
     m.uniforms.uFeather.value = glow ? FEATHER : 0;
     if (info.layer === "veil") return;
-    // over the real, bright picture a full-strength glow burns out to white and hides the face, so it is turned down
-    m.uniforms.uGain.value = m.userData.gain * (glow ? 0.75 : 1) * (glow && info.layer && info.layer !== "outline" ? share : 1);
+    // in lens mode the picture stays bright, and a full-strength glow would burn out to white and hide the face
+    m.uniforms.uGain.value = m.userData.gain * (glow && st.lens ? 0.75 : 1) * (glow && info.layer && info.layer !== "outline" ? share : 1);
   });
   if (BODY) {
     bodyGroup.visible = limbGroup.visible = showBody && body.on;
@@ -864,9 +869,10 @@ for (const b of $("subjectSeg").children) b.onclick = () => {
 for (const b of $("modeSeg").children) b.onclick = () => { if (b.dataset.mode !== st.mode) { endQuiz(true); enter(b.dataset.mode); } };
 $("tNames").onclick = () => { st.names = { bn: "en", en: "off", off: "bn" }[st.names]; store.set("names", st.names); applyStyle(); };
 $("tStyle").onclick = () => { st.solid = !st.solid; applyStyle(); };
-$("tLens").onclick = () => { st.lens = !st.lens; store.set("lens", st.lens); syncSee(); };
+st.see = seeSaved();
+$("tLens").onclick = () => { st.lens = !st.lens; store.set("lens2", st.lens); st.see = seeSaved(); syncSee(); };
 function syncSee() { $("tLens").classList.toggle("on", st.lens); $("tLens").setAttribute("aria-pressed", String(st.lens)); $("seeRow").hidden = st.mode !== "mirror"; $("see").value = Math.round(st.see * 100); }
-$("see").oninput = e => { st.see = e.target.value / 100; store.set("see3", st.see); };
+$("see").oninput = e => { st.see = e.target.value / 100; store.set(seeKey(), st.see); };
 $("tQuiz").onclick = startQuiz;
 $("tShot").onclick = snapshot;
 $("tRec").onclick = toggleRec;
