@@ -8,6 +8,17 @@ const FACE_MODEL = MODELS + "face_landmarker/face_landmarker/float16/1/face_land
 const HAND_MODEL = MODELS + "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 const POSE_MODEL = MODELS + "pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 const SITE_NAME = "biology.bandb.academy";
+// AdSense: paste the ad unit id (data-ad-slot) for the quiz result here after approval. Empty = no ad.
+const AD_CLIENT = "ca-pub-8098716292767078", QUIZ_AD_SLOT = "";
+function quizAdHTML() {
+  if (!QUIZ_AD_SLOT) return "";
+  if (!document.querySelector("script[src*='adsbygoogle']")) {
+    const s = document.createElement("script"); s.async = true; s.crossOrigin = "anonymous";
+    s.src = "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=" + AD_CLIENT; document.head.appendChild(s);
+  }
+  setTimeout(() => { try { (window.adsbygoogle = window.adsbygoogle || []).push({}); } catch (e) {} }, 0);
+  return `<div class="ad quizad"><ins class="adsbygoogle" style="display:block;height:250px" data-ad-client="${AD_CLIENT}" data-ad-slot="${QUIZ_AD_SLOT}"></ins></div>`;
+}
 const QUIZ_LEN = 8;
 
 const $ = id => document.getElementById(id);
@@ -861,7 +872,8 @@ function showResult() {
   const line = s === n ? "দারুণ! সব ঠিক।" : s >= n * 0.6 ? "ভালো হয়েছে। আরেকবার দিলে সব পারবে।" : "আরেকটু দেখে নাও, তারপর আবার চেষ্টা করো।";
   endQuiz(false);
   $("resultBody").innerHTML = `<p class="score">${bnNum(s)}/${bnNum(n)}</p><p>${line}</p>` +
-    `<div class="row"><button class="btn primary" id="again">আবার খেলো</button><button class="btn line" id="tell">স্কোর শেয়ার</button><button class="btn ghost" id="done">বন্ধ</button></div>` + promoHTML("quiz");
+    `<div class="row"><button class="btn primary" id="again">আবার খেলো</button><button class="btn line" id="tell">স্কোর শেয়ার</button><button class="btn ghost" id="done">বন্ধ</button></div>` +
+    (promoHTML(s >= n * 0.6 ? "quiz_high" : "quiz_low") || promoHTML("quiz")) + quizAdHTML();
   $("result").hidden = false; $("bottom").hidden = true;
   $("again").onclick = startQuiz;
   $("done").onclick = () => { $("result").hidden = true; $("bottom").hidden = false; };
