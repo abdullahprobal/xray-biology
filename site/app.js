@@ -647,7 +647,7 @@ const lensOn = () => st.lens && st.mode === "mirror" && !st.quiz;
 const touching = now => lensTouch && now - lensTouch.t < 4000;
 function aimLens(now) {
   if (!lensOn()) { lens = null; return; }
-  const r = Math.min(view.w, view.h) * 0.3; let x, y;
+  const r = Math.min(view.w, view.h) * 0.4; let x, y;
   if (seenHands[0]) { x = W - seenHands[0][8].x * W; y = seenHands[0][8].y * H; lensUsed = true; }
   else if (touching(now)) { x = lensTouch.x; y = lensTouch.y; }
   else if (head.on && nose) { x = W - nose.x * W; y = nose.y * H; }
