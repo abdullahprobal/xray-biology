@@ -183,8 +183,10 @@ h2 { margin: 0 0 18px; font: 700 26px/1.25 var(--display); }
 @keyframes scanFlash { 0% { opacity: 1; } 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .scan::before { animation: none; display: none; } }
 
-/* ---------- "it's me": film look on the camera picture, see-through slider ---------- */
-.film video { filter: grayscale(1) sepia(.35) hue-rotate(170deg) saturate(1.6) contrast(1.25) brightness(.8); }
+/* ---------- shadow slider, video clip ---------- */
+.tools { grid-template-columns: 1fr 1.1fr 1fr 1fr 1.3fr; gap: 6px; }
+.tool.rec { border-color: var(--lamp); color: var(--lamp); }
+.clip { display: block; width: 100%; max-height: 44dvh; background: #000; object-fit: contain; }
 .seeRow { display: flex; align-items: center; gap: 10px; padding: 0 2px 10px; font: 600 14px/1 var(--display); color: var(--bone); }
 .seeRow[hidden] { display: none; }
 .seeRow input { flex: 1; accent-color: var(--lamp); height: 28px; }
