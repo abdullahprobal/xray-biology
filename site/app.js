@@ -515,7 +515,7 @@ function drawHud(finger) {
   g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
   const q = st.quiz, showNames = st.names !== "off" && !q;
   const label = d => (st.names === "en" ? d.part.en : d.part.bn);
-  g.font = '600 15px "Anek Bangla", sans-serif'; g.textBaseline = "middle"; g.lineCap = "round";
+  g.font = '700 16px "Anek Bangla", sans-serif'; g.textBaseline = "middle"; g.lineCap = "round";
   for (const d of dots) {
     d.hot = st.selected === d.part.id ? "#ffb02e" : q && q.flash && q.flash.id === d.part.id ? q.flash.color : null;
     d.named = false;
@@ -530,7 +530,7 @@ function drawHud(finger) {
     d.dir = d.x > W / 2 ? 1 : -1;
     const room = g.measureText(label(d)).width + 40;        // flip a name that would run off the screen
     if (d.dir < 0 && d.x - room < 0) d.dir = 1; else if (d.dir > 0 && d.x + room > W) d.dir = -1;
-    d.ly = Math.max(d.y, lastY[d.dir] + 21); lastY[d.dir] = d.ly;
+    d.ly = Math.max(d.y, lastY[d.dir] + 27); lastY[d.dir] = d.ly;
   }
   for (const d of dots) {
     const col = CONTENT.layers[d.part.layer].color, hot = d.hot;
@@ -541,7 +541,11 @@ function drawHud(finger) {
     if (d.named) {                                          // name on a short leader line, pointing away from the middle
       const dir = d.dir, x0 = d.x + dir * (hot ? 11 : 8), x1 = d.x + dir * 28;
       g.beginPath(); g.moveTo(x0, d.y); g.lineTo(x1, d.ly); g.lineWidth = 1; g.strokeStyle = hot || "rgba(241,236,224,.7)"; g.stroke();
-      g.textAlign = dir > 0 ? "left" : "right"; g.fillStyle = hot || "#f1ece0"; g.fillText(label(d), x1 + dir * 5, d.ly + 1);
+      // dark plate behind the name so it stays readable over any camera background
+      const t = label(d), tw = g.measureText(t).width, tx = x1 + dir * 5, px = dir > 0 ? tx - 5 : tx - tw - 5;
+      g.shadowBlur = 0; g.fillStyle = "rgba(5,6,7,.78)";
+      g.beginPath(); g.roundRect ? g.roundRect(px, d.ly - 12, tw + 10, 24, 4) : g.rect(px, d.ly - 12, tw + 10, 24); g.fill();
+      g.textAlign = dir > 0 ? "left" : "right"; g.fillStyle = hot || "#fff"; g.fillText(t, tx, d.ly + 1);
     }
     g.shadowBlur = 0;
   }

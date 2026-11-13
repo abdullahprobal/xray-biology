@@ -45,7 +45,8 @@ const page = ({ title, desc, path, body, up = "../", ld = [] }) => `<!doctype ht
 <link rel="canonical" href="${BASE}${path}">
 <meta property="og:type" content="article"><meta property="og:locale" content="bn_BD"><meta property="og:site_name" content="এক্স-রে বায়োলজি">
 <meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(desc)}"><meta property="og:url" content="${BASE}${path}">
-<meta name="twitter:card" content="summary">
+<meta property="og:image" content="${BASE}og.jpg"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="${BASE}og.jpg">
 ${ld.map(o => `<script type="application/ld+json">${JSON.stringify(o).replace(/</g, "\\u003c")}</script>`).join("\n")}
 ${up === "../" ? ADS_JS : ""}
 <link rel="preconnect" href="https://fonts.googleapis.com">
