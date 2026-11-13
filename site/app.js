@@ -56,7 +56,9 @@ class PointFilter {
 }
 
 // ---------------------------------------------------------------- state
+const SEE = see => ({ veil: 0.15 + 0.7 * see, shade: 0.2 + 0.58 * see, bone: 0.12 + 0.88 * see });
 const st = {
+  see: store.get("see", 0.3),
   mode: null,                      // "mirror" | "explore"
   subject: "head",                 // "head" (face + hands) | "body" (everything below the neck)
   layers: { skull: true, brain: false, muscles: false, eyes: true, hands: true,
@@ -299,7 +301,7 @@ function orbitBody() {
 }
 function shadeBody(g) {                                     // darken the real body so the glow reads on any clothes
   const P = body.pts, Q = body.Q, x = q => q.x, y = q => H - q.y, wide = bR.length();
-  g.lineJoin = g.lineCap = "round"; g.strokeStyle = g.fillStyle = "rgba(4,7,13,0.74)";
+  g.lineJoin = g.lineCap = "round"; g.strokeStyle = g.fillStyle = `rgba(4,7,13,${SEE(st.see).shade})`;
   g.lineWidth = wide * 0.3; g.beginPath();
   [P[11], P[12], body.hips[1], body.hips[0]].forEach((q, k) => k ? g.lineTo(x(q), y(q)) : g.moveTo(x(q), y(q)));
   g.closePath(); g.fill(); g.stroke();
@@ -344,7 +346,7 @@ function applyStyle() {
     m.blending = st.solid ? THREE.NormalBlending : THREE.AdditiveBlending;
     m.transparent = !st.solid; m.depthTest = m.depthWrite = st.solid; m.needsUpdate = true;
   });
-  $("tStyle").textContent = st.solid ? "সলিড" : "এক্স-রে";
+  $("tStyle").textContent = st.solid ? "সলিড" : "এক্স-রে"; if (typeof syncSee === "function") syncSee();
   $("tNames").textContent = NAME_LABEL[st.names]; $("tNames").classList.toggle("on", st.names !== "off");
 }
 
@@ -458,7 +460,7 @@ function poseHand(rig, lms, flip, now) {
 }
 
 function shadeHands(g, list) {                              // darken the real hand so its bones read clearly
-  g.lineJoin = g.lineCap = "round"; g.strokeStyle = g.fillStyle = "rgba(4,7,13,0.78)";
+  g.lineJoin = g.lineCap = "round"; g.strokeStyle = g.fillStyle = `rgba(4,7,13,${Math.min(0.8, SEE(st.see).shade + 0.04)})`;
   for (const lms of list) {
     const x = i => lms[i].x * W, y = i => lms[i].y * H;
     const d = Math.hypot(x(5) - x(17), y(5) - y(17)) || 1;
@@ -578,6 +580,21 @@ let seenHands = [], seenFlip = [], frameNo = 0, lastPose = null, bodyLost = 0, b
 let fps = 0, fpsN = 0, fpsT = 0;
 const trk = {};                                             // which processor each tracker runs on, for #debug
 function countFrame(now) { fpsN++; if (now - fpsT > 1000) { fps = Math.round(fpsN * 1000 / (now - fpsT)); fpsN = 0; fpsT = now; } }
+let wowDone = false;
+function xrayWow() {                                         // one scan sweep, a soft "zap" and a short buzz
+  if (st.mode !== "mirror") return;
+  const el = document.createElement("div"); el.className = "scan"; $("stage").appendChild(el);
+  setTimeout(() => el.remove(), 1400);
+  try { if (navigator.vibrate && (!navigator.userActivation || navigator.userActivation.hasBeenActive)) navigator.vibrate(35); } catch (e) {}
+  try {
+    const A = window.AudioContext || window.webkitAudioContext; if (!A) return;
+    const ac = xrayWow.ac || (xrayWow.ac = new A()), t = ac.currentTime;
+    const o = ac.createOscillator(), v = ac.createGain();
+    o.type = "sawtooth"; o.frequency.setValueAtTime(180, t); o.frequency.exponentialRampToValueAtTime(1400, t + 0.5);
+    v.gain.setValueAtTime(0.0001, t); v.gain.exponentialRampToValueAtTime(0.06, t + 0.05); v.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+    o.connect(v).connect(ac.destination); o.start(t); o.stop(t + 0.65);
+  } catch (e) {}
+}
 function hint(t) { if ($("hint").textContent !== t) $("hint").textContent = t; }
 
 function render() {
@@ -587,7 +604,9 @@ function render() {
     m.mesh.visible = m.layer === "veil" ? st.mode === "mirror" && !st.solid
                    : m.layer === "outline" ? !st.solid : !!st.layers[m.layer];
   }
-  meshes.veil.mesh.material.uniforms.uAlpha.value = 0.86;
+  const sv = SEE(st.see);
+  meshes.veil.mesh.material.uniforms.uAlpha.value = sv.veil;
+  for (const k in meshes) if (k !== "veil" && meshes[k].mesh.material.uniforms) meshes[k].mesh.material.uniforms.uAlpha.value = mirror && !st.solid ? sv.bone : 1;
   if (BODY) {
     bodyGroup.visible = limbGroup.visible = showBody && body.on;
     for (const k in bodyMeshes) { const m = bodyMeshes[k]; m.mesh.visible = !!st.layers[m.layer] && (!m.limb || m.seen); }
@@ -653,6 +672,7 @@ function tick(now) {
        : bodyState === "failed" ? "শরীরের মডেল লোড হয়নি। পেজ রিফ্রেশ করো"
        : head.on || body.on || seenHands.length ? ""
        : "ক্যামেরার সামনে এসো। আলো যেন গায়ে পড়ে");
+    if (!wowDone && (head.on || body.on)) { wowDone = true; xrayWow(); }
     if (st.quiz) {
       if (seenHands[0]) finger = { x: W - seenHands[0][8].x * W, y: seenHands[0][8].y * H, hold: 0 };
       else if (lastPose && body.on) {                       // far from the camera: point with either index finger
@@ -723,7 +743,7 @@ async function enter(mode) {
           .catch(err => { bodyState = "failed"; console.error("body", err); });
       }
     } else { stopCamera(); if (st.subject === "body") await ensureBody(); }
-    st.mode = mode; head.on = false; lastVideoTime = -1; seenHands = []; placeBody();
+    st.mode = mode; wowDone = false; head.on = false; lastVideoTime = -1; seenHands = []; placeBody();
     orbit.dist = st.subject === "body" ? 175 : 62;
     $("subjectSeg").hidden = mode === "mirror";
     for (const b of $("subjectSeg").children) b.classList.toggle("on", b.dataset.subject === st.subject);
@@ -731,7 +751,7 @@ async function enter(mode) {
     $("home").hidden = true; $("ui").hidden = false; document.body.classList.add("viewing"); scrollTo(0, 0); hint("");
     $("stage").classList.add("live"); $("stage").classList.toggle("mirrored", mode === "mirror"); $("stage").classList.toggle("explore", mode === "explore");
     for (const b of $("modeSeg").children) b.classList.toggle("on", b.dataset.mode === mode);
-    syncChips(); layout(); status("");
+    syncChips(); layout(); status(""); syncSee();
     if (!running) { running = true; requestAnimationFrame(tick); }
   } catch (err) {
     stopCamera();
@@ -789,6 +809,9 @@ for (const b of $("subjectSeg").children) b.onclick = () => {
 for (const b of $("modeSeg").children) b.onclick = () => { if (b.dataset.mode !== st.mode) { endQuiz(true); enter(b.dataset.mode); } };
 $("tNames").onclick = () => { st.names = { bn: "en", en: "off", off: "bn" }[st.names]; store.set("names", st.names); applyStyle(); };
 $("tStyle").onclick = () => { st.solid = !st.solid; applyStyle(); };
+const FILM = "grayscale(1) sepia(.35) hue-rotate(170deg) saturate(1.6) contrast(1.25) brightness(.8)";
+function syncSee() { $("stage").classList.toggle("film", !st.solid); $("seeRow").hidden = st.solid || st.mode !== "mirror"; $("see").value = Math.round(st.see * 100); }
+$("see").oninput = e => { st.see = e.target.value / 100; store.set("see", st.see); };
 $("tQuiz").onclick = startQuiz;
 $("tShot").onclick = snapshot;
 $("quizStop").onclick = () => endQuiz(true);
@@ -874,18 +897,14 @@ function endQuiz(silent) {
 function showResult() {
   const q = st.quiz, n = q.pool.length, s = q.score;
   const line = s === n ? "দারুণ! সব ঠিক।" : s >= n * 0.6 ? "ভালো হয়েছে। আরেকবার দিলে সব পারবে।" : "আরেকটু দেখে নাও, তারপর আবার চেষ্টা করো।";
-  endQuiz(false);
+  endQuiz(false); st.score = { s, n };
   $("resultBody").innerHTML = `<p class="score">${bnNum(s)}/${bnNum(n)}</p><p>${line}</p>` +
-    `<div class="row"><button class="btn primary" id="again">আবার খেলো</button><button class="btn line" id="tell">স্কোর শেয়ার</button><button class="btn ghost" id="done">বন্ধ</button></div>` +
+    `<div class="row"><button class="btn primary" id="again">আবার খেলো</button><button class="btn line" id="tell">স্কোরসহ ছবি শেয়ার</button><button class="btn ghost" id="done">বন্ধ</button></div>` +
     (promoHTML(s >= n * 0.6 ? "quiz_high" : "quiz_low") || promoHTML("quiz")) + quizAdHTML();
   $("result").hidden = false; $("bottom").hidden = true;
   $("again").onclick = startQuiz;
   $("done").onclick = () => { $("result").hidden = true; $("bottom").hidden = false; };
-  $("tell").onclick = () => {
-    const text = `এক্স-রে বায়োলজি কুইজে আমার স্কোর ${bnNum(s)}/${bnNum(n)}। তুমিও নিজের শরীরে জীববিজ্ঞান শেখো: https://${SITE_NAME}`;
-    if (navigator.share) navigator.share({ text }).catch(() => {});
-    else if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => { $("tell").textContent = "কপি হয়েছে"; });
-  };
+  $("tell").onclick = () => { $("result").hidden = true; $("bottom").hidden = false; setTimeout(snapshot, 60); };
 }
 
 // ---------------------------------------------------------------- photo
@@ -897,19 +916,27 @@ async function snapshot() {
   g.fillStyle = "#050607"; g.fillRect(0, 0, c.width, c.height);
   render();                                                 // draw the 3D layer right now so its pixels can be copied
   g.save(); g.scale(k, k); g.translate(L.left - r.left, L.top - r.top);
-  if (st.mode === "mirror") { g.save(); g.translate(W, 0); g.scale(-1, 1); g.drawImage(video, 0, 0, W, H); g.drawImage($("shade"), 0, 0, W, H); g.drawImage($("gl"), 0, 0, W, H); g.restore(); }
+  if (st.mode === "mirror") { g.save(); g.translate(W, 0); g.scale(-1, 1); if (!st.solid) g.filter = FILM; g.drawImage(video, 0, 0, W, H); g.filter = "none"; g.drawImage($("shade"), 0, 0, W, H); g.drawImage($("gl"), 0, 0, W, H); g.restore(); }
   else g.drawImage($("gl"), 0, 0, W, H);
   g.drawImage(hud, 0, 0, W, H); g.restore();
+  if (st.score) {                                             // quiz score badge, top left
+    const t1 = "কুইজে আমার স্কোর", t2 = bnNum(st.score.s) + "/" + bnNum(st.score.n);
+    const bx = 16 * k, by = 16 * k, bw = 190 * k, bh = 92 * k;
+    g.fillStyle = "#ffb02e"; g.beginPath(); g.roundRect ? g.roundRect(bx, by, bw, bh, 6 * k) : g.rect(bx, by, bw, bh); g.fill();
+    g.fillStyle = "#1a1205"; g.textBaseline = "top";
+    g.font = `700 ${Math.round(15 * k)}px "Anek Bangla", sans-serif`; g.fillText(t1, bx + 14 * k, by + 12 * k);
+    g.font = `800 ${Math.round(44 * k)}px "Anek Bangla", sans-serif`; g.fillText(t2, bx + 14 * k, by + 34 * k);
+  }
   const pad = 18 * k; g.textBaseline = "alphabetic";
   g.font = `700 ${Math.round(20 * k)}px "Anek Bangla", sans-serif`;
   g.fillStyle = "rgba(3,5,10,.6)"; g.fillRect(0, c.height - 64 * k, c.width, 64 * k);
-  g.fillStyle = "#fff"; g.fillText("এক্স-রে বায়োলজি · Board & Beyond", pad, c.height - 36 * k);
+  g.fillStyle = "#fff"; g.fillText(st.score ? "তুমি কত পাবে? এক্স-রে বায়োলজিতে খেলো" : "এক্স-রে বায়োলজি · Board & Beyond", pad, c.height - 36 * k);
   g.font = `500 ${Math.round(14 * k)}px "JetBrains Mono", monospace`; g.fillStyle = "#ffb02e"; g.fillText(SITE_NAME, pad, c.height - 14 * k);
   const blob = await new Promise(res => c.toBlob(res, "image/jpeg", 0.9));
   if (!blob) return;
   const file = new File([blob], "xray-biology.jpg", { type: "image/jpeg" });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], text: `নিজের শরীরে জীববিজ্ঞান শেখো: https://${SITE_NAME}` }); return; } catch (e) { if (e.name === "AbortError") return; }
+    try { await navigator.share({ files: [file], text: st.score ? `এক্স-রে বায়োলজি কুইজে আমার স্কোর ${bnNum(st.score.s)}/${bnNum(st.score.n)}। তুমি কত পাবে? https://${SITE_NAME}` : `নিজের শরীরে জীববিজ্ঞান শেখো: https://${SITE_NAME}` }); return; } catch (e) { if (e.name === "AbortError") return; }
   }
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = file.name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
