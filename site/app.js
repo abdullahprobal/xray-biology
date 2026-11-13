@@ -62,10 +62,11 @@ const LENS_SOFT = 0.55;                                      // the lens is full
 const SHADOW = "#04070d", FEATHER = 0.15;
 // Two camera looks. Full body (default): dark shadow over the person, bright bones everywhere.
 // Lens: the person stays clearly visible and the anatomy shows only inside a round window that follows the fingertip.
-const seeKey = () => (st.lens ? "seeLens" : "seeFull"), seeSaved = () => store.get(seeKey(), st.lens ? 0.375 : 0.95);
+// The mirror tab keeps the first, proven look (OLD); the lens tab has its own.
+const OLD = { veil: 0.86, shade: 0.76, bone: 0xe6eef8, outline: 0x8fa3b8, outlineGain: 0.32 / 0.55 };
 const st = {
-  see: 0.95,
-  lens: store.get("lens2", false),
+  see: store.get("seeLens", 0.375),  // lens tab only: how dark the shadow under the anatomy is
+  lens: false,                       // true while the lens tab is open
   mode: null,                      // "mirror" | "explore"
   subject: "head",                 // "head" (face + hands) | "body" (everything below the neck)
   layers: { skull: true, brain: false, muscles: false, eyes: true, hands: true,
@@ -135,7 +136,7 @@ function material(glow, solid, gain, mode) {
     uniforms: { uGlow: { value: new THREE.Color(glow) }, uSolid: { value: new THREE.Color(solid) }, uMode: { value: mode || 0 },
                 uGain: { value: gain }, uAlpha: { value: 1 }, uFlatView: { value: 0 }, uFeather: { value: 0 }, uFade: { value: 0 } },
   });
-  m.userData.gain = gain; return m;
+  m.userData.gain = gain; m.userData.glow = glow; return m;
 }
 
 function unpack(list, bin) {
@@ -380,7 +381,6 @@ function layout() {
   cam.aspect = W / H; cam.updateProjectionMatrix(); baseProj = cam.projectionMatrix.clone();
   ortho.right = W; ortho.top = H; ortho.updateProjectionMatrix();
   for (const id of ["hud", "shade"]) { const c = $(id); c.width = Math.round(W * DPR); c.height = Math.round(H * DPR); }
-  $("shade").style.filter = `blur(${Math.max(2, W * 0.006).toFixed(1)}px)`;   // soft edge on the shadows
 }
 
 // ---------------------------------------------------------------- head pose
@@ -529,7 +529,8 @@ function drawHud(finger) {
   g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
   const q = st.quiz, showNames = st.names !== "off" && !q;
   const label = d => (st.names === "en" ? d.part.en : d.part.bn);
-  g.font = '600 14px "Anek Bangla", sans-serif'; g.textBaseline = "middle"; g.lineCap = g.lineJoin = "round";
+  const thin = st.lens && st.mode === "mirror";              // lens tab: thin side labels; everywhere else: the first label style
+  g.font = (thin ? "600 14px" : "700 16px") + ' "Anek Bangla", sans-serif'; g.textBaseline = "middle"; g.lineCap = g.lineJoin = "round";
   for (const d of dots) {
     d.hot = st.selected === d.part.id ? "#ffb02e" : q && q.flash && q.flash.id === d.part.id ? q.flash.color : null;
     d.named = false;
@@ -537,6 +538,34 @@ function drawHud(finger) {
   // Only the most useful names: the chosen part, then the layer just switched on, then what is near the middle.
   const rank = d => (d.hot ? 0 : 1e7) + (d.part.layer === st.lastLayer ? 0 : 1e6) + Math.hypot(d.x - W / 2, d.y - H / 2);
   dots.filter(d => d.hot || (showNames && d.front)).sort((a, b) => rank(a) - rank(b)).slice(0, MAX_NAMES).forEach(d => { d.named = true; });
+  if (!thin) {
+  // Names on the same side are spread out so they never sit on top of each other.
+  const lastY = { "1": -1e9, "-1": -1e9 };
+  for (const d of [...dots].sort((a, b) => a.y - b.y)) {
+    if (!d.named) continue;
+    d.dir = d.x > W / 2 ? 1 : -1;
+    const room = g.measureText(label(d)).width + 40;        // flip a name that would run off the screen
+    if (d.dir < 0 && d.x - room < 0) d.dir = 1; else if (d.dir > 0 && d.x + room > W) d.dir = -1;
+    d.ly = Math.max(d.y, lastY[d.dir] + 27); lastY[d.dir] = d.ly;
+  }
+  for (const d of dots) {
+    const col = CONTENT.layers[d.part.layer].color, hot = d.hot;
+    g.globalAlpha = d.front || hot ? 1 : 0.4;
+    g.shadowColor = "rgba(0,0,0,.9)"; g.shadowBlur = 6;
+    g.beginPath(); g.arc(d.x, d.y, hot ? 9 : 5.5, 0, 6.3); g.lineWidth = hot ? 2.5 : 1.5; g.strokeStyle = hot || "#f1ece0"; g.stroke();
+    g.beginPath(); g.arc(d.x, d.y, 2.2, 0, 6.3); g.fillStyle = hot || col; g.fill();
+    if (d.named) {                                          // name on a short leader line, pointing away from the middle
+      const dir = d.dir, x0 = d.x + dir * (hot ? 11 : 8), x1 = d.x + dir * 28;
+      g.beginPath(); g.moveTo(x0, d.y); g.lineTo(x1, d.ly); g.lineWidth = 1; g.strokeStyle = hot || "rgba(241,236,224,.7)"; g.stroke();
+      // dark plate behind the name so it stays readable over any camera background
+      const t = label(d), tw = g.measureText(t).width, tx = x1 + dir * 5, px = dir > 0 ? tx - 5 : tx - tw - 5;
+      g.shadowBlur = 0; g.fillStyle = "rgba(5,6,7,.78)";
+      g.beginPath(); g.roundRect ? g.roundRect(px, d.ly - 12, tw + 10, 24, 4) : g.rect(px, d.ly - 12, tw + 10, 24); g.fill();
+      g.textAlign = dir > 0 ? "left" : "right"; g.fillStyle = hot || "#fff"; g.fillText(t, tx, d.ly + 1);
+    }
+    g.shadowBlur = 0;
+  }
+  } else {
   // Names stand in two columns beside the subject, joined to their dots by thin lines, like the markers on a film.
   hudNo++;
   let lo = 1e9, hi = -1e9; for (const d of dots) { if (d.x < lo) lo = d.x; if (d.x > hi) hi = d.x; }
@@ -577,6 +606,7 @@ function drawHud(finger) {
       g.fillStyle = "rgba(5,6,7,.78)"; g.beginPath(); g.roundRect ? g.roundRect(px, d.ly - 10, tw + 10, 21, 4) : g.rect(px, d.ly - 10, tw + 10, 21); g.fill();
       g.fillStyle = hot || "#fff"; g.fillText(t, d.tx, d.ly + 1);
     }
+  }
   }
   g.globalAlpha = 1; g.textAlign = "left";
   if (lens) { g.beginPath(); g.arc(lens.x, lens.y, lens.r, 0, 6.3); g.strokeStyle = "rgba(127,209,255,.75)"; g.lineWidth = 1.5; g.stroke(); }
@@ -653,15 +683,19 @@ function render() {
     m.mesh.visible = m.layer === "veil" ? st.mode === "mirror" && !st.solid
                    : m.layer === "outline" ? !st.solid : !!st.layers[m.layer];
   }
-  const glow = mirror && !st.solid, dark = SEE(st.see), L = st.layers;
-  meshes.veil.mesh.material.uniforms.uAlpha.value = dark;
-  // glowing light adds up, so with several head layers on each one gets a smaller share
+  const glow = mirror && !st.solid, lensLook = glow && st.lens, L = st.layers;
+  meshes.veil.mesh.material.uniforms.uAlpha.value = lensLook ? SEE(st.see) : OLD.veil;
+  // lens tab: glowing light adds up, so with several head layers on each one gets a smaller share
   const share = 1 / (0.4 + 0.6 * Math.max(1, (L.skull ? 1 : 0) + (L.brain ? 1 : 0) + (L.muscles ? 1 : 0)));
   allMaterials((m, info) => {
-    m.uniforms.uFeather.value = glow ? FEATHER : 0;
+    const u = m.uniforms, line = info.layer === "outline";
+    u.uFeather.value = lensLook ? FEATHER : 0;
+    if (info.layer === "veil" || line) u.uFade.value = lensLook ? 1 : 0;
     if (info.layer === "veil") return;
-    // in lens mode the picture stays bright, and a full-strength glow would burn out to white and hide the face
-    m.uniforms.uGain.value = m.userData.gain * (glow && st.lens ? 0.75 : 1) * (glow && info.layer && info.layer !== "outline" ? share : 1);
+    if (line) u.uGlow.value.setHex(lensLook ? m.userData.glow : OLD.outline);
+    else if (m.userData.glow === 0xbfe3ff) u.uGlow.value.setHex(lensLook ? 0xbfe3ff : OLD.bone);
+    // in the lens tab the picture stays bright, and a full-strength glow would burn out to white and hide the face
+    u.uGain.value = m.userData.gain * (lensLook ? (line ? 0.75 : 0.75 * (info.layer ? share : 1)) : line ? OLD.outlineGain : 1);
   });
   if (BODY) {
     bodyGroup.visible = limbGroup.visible = showBody && body.on;
@@ -723,7 +757,9 @@ function tick(now) {
     hands.forEach((rig, r) => { if (rigFor[r]) poseHand(rig, rigFor[r][0], rigFor[r][1], now); else rig.group.visible = false; });
     if (body.on) placeLimbs(seenHands.map(h => new THREE.Vector3(h[0].x * W, (1 - h[0].y) * H, 0)));
     const sh = $("shade"), g = sh.getContext("2d"); g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, W, H);
-    sh.style.opacity = (SEE(st.see) * 0.85).toFixed(2);     // shadows are painted solid, then shown see-through as one piece
+    // shadows are painted solid, then shown see-through as one piece; the lens tab makes them lighter and soft-edged
+    sh.style.opacity = st.lens ? (SEE(st.see) * 0.85).toFixed(2) : OLD.shade;
+    sh.style.filter = st.lens ? `blur(${Math.max(2, W * 0.006).toFixed(1)}px)` : "none";
     if (!st.solid) { if (body.on) shadeBody(g); if (showHands.length) shadeHands(g, showHands); }
     hint(bodyState === "loading" && !head.on ? "শরীরের মডেল লোড হচ্ছে…"
        : bodyState === "failed" ? "শরীরের মডেল লোড হয়নি। পেজ রিফ্রেশ করো"
@@ -810,7 +846,7 @@ async function enter(mode) {
     buildChips();
     $("home").hidden = true; $("ui").hidden = false; document.body.classList.add("viewing"); scrollTo(0, 0); hint("");
     $("stage").classList.add("live"); $("stage").classList.toggle("mirrored", mode === "mirror"); $("stage").classList.toggle("explore", mode === "explore");
-    for (const b of $("modeSeg").children) b.classList.toggle("on", b.dataset.mode === mode);
+    for (const b of $("modeSeg").children) b.classList.toggle("on", b.dataset.mode === (mode === "mirror" && st.lens ? "lens" : mode));
     syncChips(); layout(); status(""); syncSee();
     if (!running) { running = true; requestAnimationFrame(tick); }
   } catch (err) {
@@ -859,20 +895,22 @@ function syncChips() {
     b.classList.toggle("on", !!st.layers[k] && !b.disabled); b.setAttribute("aria-pressed", String(!!st.layers[k]));
   }
 }
-$("goMirror").onclick = () => enter("mirror");
+$("goMirror").onclick = () => { st.lens = false; enter("mirror"); };
 $("goExplore").onclick = () => enter("explore");
 $("back").onclick = goHome;
 for (const b of $("subjectSeg").children) b.onclick = () => {
   if (b.dataset.subject === st.subject) return;
   endQuiz(true); closeCard(); st.subject = b.dataset.subject; orbit.spin = true; enter(st.mode);
 };
-for (const b of $("modeSeg").children) b.onclick = () => { if (b.dataset.mode !== st.mode) { endQuiz(true); enter(b.dataset.mode); } };
+for (const b of $("modeSeg").children) b.onclick = () => {  // the lens tab is the camera too, with the lens look
+  const wantLens = b.dataset.mode === "lens", mode = wantLens ? "mirror" : b.dataset.mode;
+  if (mode === st.mode && (mode !== "mirror" || wantLens === st.lens)) return;
+  endQuiz(true); st.lens = wantLens; enter(mode);
+};
 $("tNames").onclick = () => { st.names = { bn: "en", en: "off", off: "bn" }[st.names]; store.set("names", st.names); applyStyle(); };
 $("tStyle").onclick = () => { st.solid = !st.solid; applyStyle(); };
-st.see = seeSaved();
-$("tLens").onclick = () => { st.lens = !st.lens; store.set("lens2", st.lens); st.see = seeSaved(); syncSee(); };
-function syncSee() { $("tLens").classList.toggle("on", st.lens); $("tLens").setAttribute("aria-pressed", String(st.lens)); $("seeRow").hidden = st.mode !== "mirror"; $("see").value = Math.round(st.see * 100); }
-$("see").oninput = e => { st.see = e.target.value / 100; store.set(seeKey(), st.see); };
+function syncSee() { $("seeRow").hidden = !(st.lens && st.mode === "mirror"); $("see").value = Math.round(st.see * 100); }
+$("see").oninput = e => { st.see = e.target.value / 100; store.set("seeLens", st.see); };
 $("tQuiz").onclick = startQuiz;
 $("tShot").onclick = snapshot;
 $("tRec").onclick = toggleRec;
