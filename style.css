@@ -172,3 +172,19 @@ h2 { margin: 0 0 18px; font: 700 26px/1.25 var(--display); }
 .btn.cta:active { transform: scale(.97); background: #ffc04f; }
 @keyframes ctaPulse { 0% { box-shadow: 0 0 0 0 rgba(255,176,46,.55); } 70% { box-shadow: 0 0 0 16px rgba(255,176,46,0); } 100% { box-shadow: 0 0 0 0 rgba(255,176,46,0); } }
 @media (prefers-reduced-motion: reduce) { .btn.cta { animation: none; } }
+
+/* ---------- X-ray wow: one scan sweep when the body is first found ---------- */
+.scan { position: absolute; inset: 0; pointer-events: none; z-index: 5; overflow: hidden; }
+.scan::before { content: ""; position: absolute; left: 0; right: 0; height: 120px; top: -120px;
+  background: linear-gradient(to bottom, rgba(150,220,255,0), rgba(150,220,255,.35) 85%, rgba(230,250,255,.9));
+  box-shadow: 0 2px 18px rgba(150,220,255,.8); animation: scanDown 1.2s cubic-bezier(.3,.1,.3,1) forwards; }
+.scan::after { content: ""; position: absolute; inset: 0; background: rgba(170,225,255,.18); animation: scanFlash 1.2s ease-out forwards; }
+@keyframes scanDown { to { top: 100%; } }
+@keyframes scanFlash { 0% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .scan::before { animation: none; display: none; } }
+
+/* ---------- "it's me": film look on the camera picture, see-through slider ---------- */
+.film video { filter: grayscale(1) sepia(.35) hue-rotate(170deg) saturate(1.6) contrast(1.25) brightness(.8); }
+.seeRow { display: flex; align-items: center; gap: 10px; padding: 0 2px 10px; font: 600 14px/1 var(--display); color: var(--bone); }
+.seeRow[hidden] { display: none; }
+.seeRow input { flex: 1; accent-color: var(--lamp); height: 28px; }
