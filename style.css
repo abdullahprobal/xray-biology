@@ -162,3 +162,5 @@ h2 { margin: 0 0 18px; font: 700 26px/1.25 var(--display); }
 .read .ad { min-height: 280px; }
 
 .read .draft { border-left: 2px solid var(--lamp); padding: 8px 12px; color: var(--dim); font-size: 14px; margin-top: 32px; }
+
+.quizad { min-height: 250px; margin-top: 20px; }
