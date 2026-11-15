@@ -206,7 +206,7 @@ const BODY_LOOK = {                // glow colour, solid colour, glow strength
   stomach: [0xffc37a, 0xd9a066, 0.7], liver: [0xe08a5a, 0x9c5236, 0.45], pancreas: [0xffe08a, 0xd9bd6a, 0.8],
   smallint: [0xffb59a, 0xd9917a, 0.35], largeint: [0xd99a7a, 0xb07a5e, 0.45], kidneys: [0x9be8c9, 0x8a5a4a, 0.9], bladder: [0xfff3a8, 0xd9cf8a, 0.8],
 };
-function ensureBody() { return bodyPromise || (bodyPromise = buildBody()); }
+function ensureBody() { return bodyPromise || (bodyPromise = buildBody().catch(e => { bodyPromise = null; throw e; })); }   // a failed download can be tried again
 async function buildBody() {
   const [meta, bin] = await Promise.all([getJSON("assets/body.json"),
     getBin("assets/body.bin")]);
@@ -641,7 +641,7 @@ function debugLines() {
 }
 
 // ---------------------------------------------------------------- frame loop
-let faceTracker = null, handTracker = null, poseTracker = null, makeTracker = null, stream = null, lastVideoTime = -1, lostSince = 0, running = false;
+let faceTracker = null, handTracker = null, poseTracker = null, stream = null, lastVideoTime = -1, lostSince = 0, running = false;
 let seenHands = [], seenFlip = [], frameNo = 0, lastPose = null, bodyLost = 0, bodyState = "", lastHandAt = -1e9, faceBox = null;
 let fps = 0, fpsN = 0, fpsT = 0;
 const trk = {};                                             // which processor each tracker runs on, for #debug
@@ -754,8 +754,9 @@ function tick(now) {
         if (seenHands.length) lastHandAt = now;
       } else if (!wantHands) seenHands = [];
       if (runBody) {                                        // the body is found on its own; no face needed
-        const pr = poseTracker.detectForVideo(video, now);
-        lastPose = pr.landmarks && pr.landmarks[0] || null;
+        let pr = null;
+        try { pr = poseTracker.detectForVideo(video, now); } catch (e) { poseBroke(e); }   // the body tracker failing must not stop the head and hands
+        lastPose = pr && pr.landmarks && pr.landmarks[0] || null;
         if (lastPose) { poseBody(lastPose, now); if (body.on) bodyLost = 0; }
         if (!lastPose || !body.on) { if (!bodyLost) bodyLost = now; body.on = body.on && now - bodyLost < 400; }
       } else if (!wantBody) { body.on = false; lastPose = null; }
@@ -770,8 +771,10 @@ function tick(now) {
     sh.style.opacity = st.lens ? (SEE(st.see) * 0.85).toFixed(2) : OLD.shade;
     sh.style.filter = `blur(${Math.max(3, W * (st.lens ? 0.006 : 0.02)).toFixed(1)}px)`;   // soft shadow edges, never hard black shapes
     if (!st.solid) { if (body.on) shadeBody(g); if (showHands.length) shadeHands(g, showHands); }
-    hint(bodyState === "loading" && !head.on ? "শরীরের মডেল লোড হচ্ছে…"
-       : bodyState === "failed" ? "শরীরের মডেল লোড হয়নি। পেজ রিফ্রেশ করো"
+    const bodyWanted = L.skeleton || L.chest || L.digest || L.excretory;
+    if (bodyState === "failed" && bodyTries < 3 && now - bodyFailedAt > 4000) startBody();   // weak network: try again by itself
+    hint(bodyState === "loading" && bodyWanted ? "শরীরের হাড় লোড হচ্ছে…"
+       : bodyState === "failed" && bodyWanted ? "শরীরের মডেল লোড হয়নি। ইন্টারনেট দেখে পেজ রিফ্রেশ করো"
        : head.on || body.on || seenHands.length ? (lensOn() && !lensUsed ? "আঙুল তুলে ধরো। লেন্স আঙুলের সাথে ঘুরবে" : "")
        : "ক্যামেরার সামনে এসো। আলো যেন গায়ে পড়ে");
     if (!wowDone && (head.on || body.on)) { wowDone = true; xrayWow(); }
@@ -795,23 +798,48 @@ function tick(now) {
 }
 
 // ---------------------------------------------------------------- camera + modes
-async function loadTrackers() {
-  if (faceTracker) return;
-  const vision = await import(MP + "/vision_bundle.mjs");
-  const files = await vision.FilesetResolver.forVisionTasks(MP + "/wasm");
-  const make = (Kind, model, extra) => async delegate =>
-    Kind.createFromOptions(files, Object.assign({ baseOptions: { modelAssetPath: model, delegate }, runningMode: "VIDEO" }, extra));
-  makeTracker = make(vision.PoseLandmarker, POSE_MODEL, { numPoses: 1 });
-  const face = make(vision.FaceLandmarker, FACE_MODEL, { numFaces: 1, outputFacialTransformationMatrixes: true, outputFaceBlendshapes: true });
-  const hand = make(vision.HandLandmarker, HAND_MODEL, { numHands: 2 });
-  try { faceTracker = await face("GPU"); trk.face = "GPU"; } catch (e) { faceTracker = await face("CPU"); trk.face = "CPU"; }
-  try { handTracker = await hand("GPU"); trk.hand = "GPU"; }
-  catch (e) { try { handTracker = await hand("CPU"); trk.hand = "CPU"; } catch (e2) { handTracker = null; trk.hand = "failed"; } }
+// The three trackers (face 3.8 MB, hand 7.8 MB, body 5.8 MB) download side by side; on a phone, one after the other took far too long.
+let visionP = null, trackersP = null, poseP = null, bodyTries = 0, bodyFailedAt = 0;
+function vision() {
+  return visionP || (visionP = (async () => {
+    const v = await import(MP + "/vision_bundle.mjs");
+    const files = await v.FilesetResolver.forVisionTasks(MP + "/wasm");
+    const make = (Kind, model, extra) => delegate =>
+      Kind.createFromOptions(files, Object.assign({ baseOptions: { modelAssetPath: model, delegate }, runningMode: "VIDEO" }, extra));
+    return { v, make };
+  })().catch(e => { visionP = null; throw e; }));
 }
-async function loadPose() {
-  if (poseTracker) return;
-  await loadTrackers();
-  try { poseTracker = await makeTracker("GPU"); trk.pose = "GPU"; } catch (e) { poseTracker = await makeTracker("CPU"); trk.pose = "CPU"; }
+async function gpuOrCpu(make, name, onlyCpu) {               // the GPU is fastest, but some phones refuse it
+  if (!onlyCpu) try { const t = await make("GPU"); trk[name] = "GPU"; return t; } catch (e) {}
+  const t = await make("CPU"); trk[name] = "CPU"; return t;
+}
+function loadTrackers() {
+  return trackersP || (trackersP = (async () => {
+    const { v, make } = await vision();
+    const [face, hand] = await Promise.all([
+      gpuOrCpu(make(v.FaceLandmarker, FACE_MODEL, { numFaces: 1, outputFacialTransformationMatrixes: true, outputFaceBlendshapes: true }), "face"),
+      gpuOrCpu(make(v.HandLandmarker, HAND_MODEL, { numHands: 2 }), "hand").catch(() => { trk.hand = "failed"; return null; }),   // the head works without hands
+    ]);
+    faceTracker = face; handTracker = hand;
+  })().catch(e => { trackersP = null; throw e; }));
+}
+function loadPose(onlyCpu) {
+  return poseP || (poseP = (async () => {
+    const { v, make } = await vision();
+    poseTracker = await gpuOrCpu(make(v.PoseLandmarker, POSE_MODEL, { numPoses: 1 }), "pose", onlyCpu);
+  })().catch(e => { poseP = null; throw e; }));
+}
+function startBody() {                                       // body models and body tracker, in the background
+  if ((poseTracker && BODY) || bodyState === "loading") return;
+  bodyState = "loading"; bodyTries++;
+  Promise.all([ensureBody(), loadPose()]).then(() => { bodyState = ""; placeBody(); })
+    .catch(err => { bodyState = "failed"; bodyFailedAt = performance.now(); console.error("body", err); });
+}
+function poseBroke(err) {                                    // a GPU that loaded but cannot run: carry on with the CPU
+  console.error("pose", err);
+  const old = poseTracker; poseTracker = null; poseP = null; try { old && old.close(); } catch (e) {}
+  if (trk.pose === "GPU") loadPose(true).then(placeBody).catch(() => { bodyState = "failed"; bodyFailedAt = performance.now(); });
+  else { bodyState = "failed"; bodyFailedAt = performance.now(); }
 }
 async function fakeCamera(url) {                             // test hook: #test=<photo in this site> stands in for the camera
   if (!/^[\w\-/.]+$/.test(url) || url.includes("..")) throw new Error("test photo must be a path inside this site");
@@ -841,12 +869,8 @@ async function enter(mode) {
     await ready();
     if (mode === "mirror") {
       step = "ট্র্যাকার"; status("ট্র্যাকার লোড হচ্ছে (প্রথমবার একটু সময় লাগে)…"); hint("লোড হচ্ছে…");
+      startBody();                                          // the body downloads at the same time as the face and hand trackers, not after them
       await loadTrackers();
-      if (!poseTracker && bodyState !== "loading") {        // the body models and tracker arrive in the background
-        bodyState = "loading";
-        Promise.all([ensureBody(), loadPose()]).then(() => { bodyState = ""; placeBody(); })
-          .catch(err => { bodyState = "failed"; console.error("body", err); });
-      }
     } else { stopCamera(); if (st.subject === "body") await ensureBody(); }
     st.mode = mode; wowDone = false; head.on = false; lastVideoTime = -1; seenHands = []; placeBody();
     orbit.dist = st.subject === "body" ? 175 : 62;
